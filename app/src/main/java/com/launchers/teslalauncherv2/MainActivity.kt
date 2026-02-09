@@ -48,14 +48,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import org.maplibre.android.MapLibre
-import org.maplibre.android.camera.CameraPosition
-import org.maplibre.android.geometry.LatLng
-import org.maplibre.android.location.LocationComponentActivationOptions
-import org.maplibre.android.location.modes.CameraMode
-import org.maplibre.android.location.modes.RenderMode
-import org.maplibre.android.maps.MapView
-import org.maplibre.android.maps.Style
+import com.mapbox.geojson.Point
+import com.mapbox.maps.extension.compose.MapEffect
+import com.mapbox.maps.extension.compose.MapboxMap
+import com.mapbox.maps.extension.compose.animation.viewport.rememberMapViewportState
+import com.mapbox.maps.extension.compose.style.MapStyle
+import com.mapbox.maps.Style
+import com.mapbox.maps.plugin.locationcomponent.location
 
 class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
@@ -67,8 +66,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Initialize MapLibre
-        MapLibre.getInstance(this)
+        // Initialize MapLibre - Not needed for Mapbox v10+ (auto-init or different flow)
+        // Mapbox.getInstance(this) is invalid in v10+, it reads token from manifest/resources
         
         // Request permissions
         requestPermissionLauncher.launch(
@@ -230,66 +229,29 @@ fun Viewport(modifier: Modifier = Modifier) {
 
 @Composable
 fun TeslaMap(modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    val mapView = remember {
-        MapView(context).apply {
-            // Initial setup if needed
-        }
-    }
-
-    // Lifecycle Management
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_CREATE -> mapView.onCreate(Bundle())
-                Lifecycle.Event.ON_START -> mapView.onStart()
-                Lifecycle.Event.ON_RESUME -> mapView.onResume()
-                Lifecycle.Event.ON_PAUSE -> mapView.onPause()
-                Lifecycle.Event.ON_STOP -> mapView.onStop()
-                Lifecycle.Event.ON_DESTROY -> mapView.onDestroy()
-                else -> {}
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-            // Note: MapView.onDestroy() is called via the observer's ON_DESTROY event
-            // But we can also do it here if needed, usually redundant if observer works.
-            // Safety measure:
-            // mapView.onDestroy() // Avoid double destroy if observer handles it
-        }
-    }
-
-    AndroidView(
-        factory = {
-            mapView.apply {
-                getMapAsync { map ->
-                    // Set Dark Style
-                    map.setStyle("https://basemaps.cartocdn.com/android/dark-matter-android-style/style.json") { style ->
-                        // Enable Location Component
-                        try {
-                            val locationComponent = map.locationComponent
-                            val locationComponentActivationOptions = LocationComponentActivationOptions.builder(context, style)
-                                .build()
-                            locationComponent.activateLocationComponent(locationComponentActivationOptions)
-                            locationComponent.isLocationComponentEnabled = true
-                            locationComponent.cameraMode = CameraMode.TRACKING
-                            locationComponent.renderMode = RenderMode.COMPASS
-                        } catch (e: SecurityException) {
-                            // Permission not granted handled elsewhere or implicitly
-                        }
-                    }
-                    
-                    // Set initial camera position if needed (e.g., center of world or user location)
-                    // Currently relying on LocationComponent to track user
-                }
+    // Mapbox automatically handles lifecycle in the Composable
+    MapboxMap(
+        modifier = modifier,
+        mapViewportState = rememberMapViewportState {
+            setCameraOptions {
+                zoom(12.0)
+                center(Point.fromLngLat(0.0, 0.0)) // Default to null island or user location
+                pitch(0.0)
+                bearing(0.0)
             }
         },
-        modifier = modifier
-    )
+        style = {
+            MapStyle(style = Style.DARK)
+        }
+    ) {
+        // Enable User Location (Puck)
+        MapEffect(Unit) { mapView ->
+            mapView.location.updateSettings {
+                enabled = true
+                pulsingEnabled = true
+            }
+        }
+    }
 }
 
 @Composable
