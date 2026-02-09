@@ -76,6 +76,8 @@ dependencies {
     implementation(libs.mapbox.maps.compose)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
+    implementation("com.github.jiangdongguo:AndroidUSBCamera:2.3.4")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
