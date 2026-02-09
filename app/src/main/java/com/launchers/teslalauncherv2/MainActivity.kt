@@ -13,6 +13,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,6 +29,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -93,6 +96,7 @@ fun TeslaLayout() {
     var currentSpeed by remember { mutableIntStateOf(0) }
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var isDemoMode by remember { mutableStateOf(false) }
+    var isNightPanel by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
@@ -133,14 +137,23 @@ fun TeslaLayout() {
         )
         Viewport(
             modifier = Modifier.weight(0.60f),
+            isNightPanel = isNightPanel,
             onInstructionUpdated = { newInstruction -> currentInstruction = newInstruction }
         )
-        Dock(modifier = Modifier.weight(0.15f))
+        Dock(
+            modifier = Modifier.weight(0.15f),
+            isNightPanel = isNightPanel,
+            onNightPanelToggle = { isNightPanel = !isNightPanel }
+        )
     }
 }
 
 @Composable
-fun Viewport(modifier: Modifier = Modifier, onInstructionUpdated: (NavInstruction?) -> Unit) {
+fun Viewport(
+    modifier: Modifier = Modifier,
+    isNightPanel: Boolean = false,
+    onInstructionUpdated: (NavInstruction?) -> Unit
+) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val mapViewportState = rememberMapViewportState {
@@ -153,68 +166,72 @@ fun Viewport(modifier: Modifier = Modifier, onInstructionUpdated: (NavInstructio
     var is3dMode by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    LaunchedEffect(is3dMode) {
-        val currentCamera = mapViewportState.cameraState
-        val targetPitch = if (is3dMode) 60.0 else 0.0
-        val targetZoom = if (is3dMode && (currentCamera?.zoom ?: 0.0) < 15.0) 16.0 else currentCamera?.zoom ?: 11.0
-        mapViewportState.flyTo(
-            CameraOptions.Builder().center(currentCamera?.center).zoom(targetZoom).pitch(targetPitch).bearing(currentCamera?.bearing).build(),
-            MapAnimationOptions.Builder().duration(1500).build()
-        )
-    }
-
-    LaunchedEffect(searchQuery) {
-        if (searchQuery.length > 2) {
-            delay(500)
-            fetchSuggestions(searchQuery, context) { results -> suggestions = results }
-        } else { suggestions = emptyList() }
-    }
+    val mapOverlayAlpha by animateFloatAsState(
+        targetValue = if (isNightPanel) 1.0f else 0.0f,
+        animationSpec = tween(1000)
+    )
 
     Box(modifier = modifier.fillMaxWidth().background(Color.DarkGray)) {
         TeslaMap(modifier = Modifier.fillMaxSize(), mapViewportState = mapViewportState, routeGeoJson = routeGeoJson, is3dMode = is3dMode)
 
-        FloatingActionButton(
-            onClick = { is3dMode = !is3dMode },
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 80.dp),
-            containerColor = if (is3dMode) Color.Cyan else Color.Black,
-            contentColor = if (is3dMode) Color.Black else Color.White
-        ) { Text(text = if (is3dMode) "3D" else "2D", fontWeight = FontWeight.Bold) }
+        // Night Panel Clona
+        if (mapOverlayAlpha > 0f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = mapOverlayAlpha))
+                    .clickable(enabled = false) {}
+            )
+        }
 
-        if (isSearchVisible) {
-            Column(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).fillMaxWidth(0.6f)) {
-                TextField(
-                    value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Where to go?", color = Color.Gray) }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth().background(Color.Black, shape = RoundedCornerShape(8.dp)),
-                    colors = TextFieldDefaults.colors(focusedContainerColor = Color.Black, unfocusedContainerColor = Color.Black, focusedTextColor = Color.White, unfocusedTextColor = Color.White),
-                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
-                    keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
-                    trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = ""; suggestions = emptyList() }) { Icon(Icons.Default.Close, "Clear", tint = Color.Gray) } }
-                )
-                if (suggestions.isNotEmpty()) {
-                    LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 250.dp).background(Color.Black.copy(alpha = 0.9f), shape = RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))) {
-                        items(suggestions) { place ->
-                            Row(modifier = Modifier.fillMaxWidth().clickable {
-                                searchQuery = place.name; suggestions = emptyList(); focusManager.clearFocus()
-                                val currentPoint = mapViewportState.cameraState?.center ?: Point.fromLngLat(14.4378, 50.0755)
-                                scope.launch(Dispatchers.IO) {
-                                    fetchRouteManual(currentPoint, place.point, context) { newGeoJson, instruction ->
-                                        scope.launch(Dispatchers.Main) { routeGeoJson = newGeoJson; onInstructionUpdated(instruction); isSearchVisible = false; is3dMode = true }
+        // UI Prvky (schovají se v noci)
+        val uiAlpha by animateFloatAsState(targetValue = if (isNightPanel) 0f else 1f)
+        if (uiAlpha > 0f) {
+            Box(modifier = Modifier.fillMaxSize().alpha(uiAlpha)) {
+                FloatingActionButton(
+                    onClick = { is3dMode = !is3dMode },
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 16.dp, bottom = 80.dp),
+                    containerColor = if (is3dMode) Color.Cyan else Color.Black,
+                    contentColor = if (is3dMode) Color.Black else Color.White
+                ) { Text(text = if (is3dMode) "3D" else "2D", fontWeight = FontWeight.Bold) }
+
+                if (isSearchVisible) {
+                    Column(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).fillMaxWidth(0.6f)) {
+                        TextField(
+                            value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("Where to go?", color = Color.Gray) }, singleLine = true,
+                            modifier = Modifier.fillMaxWidth().background(Color.Black, shape = RoundedCornerShape(8.dp)),
+                            colors = TextFieldDefaults.colors(focusedContainerColor = Color.Black, unfocusedContainerColor = Color.Black, focusedTextColor = Color.White, unfocusedTextColor = Color.White),
+                            keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
+                            keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
+                            trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = ""; suggestions = emptyList() }) { Icon(Icons.Default.Close, "Clear", tint = Color.Gray) } }
+                        )
+                        if (suggestions.isNotEmpty()) {
+                            LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 250.dp).background(Color.Black.copy(alpha = 0.9f), shape = RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))) {
+                                items(suggestions) { place ->
+                                    Row(modifier = Modifier.fillMaxWidth().clickable {
+                                        searchQuery = place.name; suggestions = emptyList(); focusManager.clearFocus()
+                                        val currentPoint = mapViewportState.cameraState?.center ?: Point.fromLngLat(14.4378, 50.0755)
+                                        scope.launch(Dispatchers.IO) {
+                                            fetchRouteManual(currentPoint, place.point, context) { newGeoJson, instruction ->
+                                                scope.launch(Dispatchers.Main) { routeGeoJson = newGeoJson; onInstructionUpdated(instruction); isSearchVisible = false; is3dMode = true }
+                                            }
+                                        }
+                                    }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.LocationOn, null, tint = Color.Cyan, modifier = Modifier.size(20.dp)); Spacer(modifier = Modifier.width(12.dp)); Text(place.name, color = Color.White, fontSize = 14.sp)
                                     }
+                                    HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp)
                                 }
-                            }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.LocationOn, null, tint = Color.Cyan, modifier = Modifier.size(20.dp)); Spacer(modifier = Modifier.width(12.dp)); Text(place.name, color = Color.White, fontSize = 14.sp)
                             }
-                            HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp)
                         }
                     }
                 }
+                Button(onClick = { isSearchVisible = !isSearchVisible; if (!isSearchVisible) { suggestions = emptyList(); searchQuery = "" } }, modifier = Modifier.align(Alignment.TopStart).padding(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(alpha = 0.6f))) {
+                    Icon(Icons.Default.Search, "Search", tint = Color.White); Spacer(modifier = Modifier.size(8.dp)); Text(if (isSearchVisible) "CLOSE" else "SEARCH", color = Color.White)
+                }
+                FloatingActionButton(onClick = { mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().bearing(FollowPuckViewportStateBearing.Constant(0.0)).pitch(0.0).zoom(14.0).build()) }, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), containerColor = Color.Black, contentColor = Color.White) {
+                    Icon(Icons.Default.MyLocation, "Locate Me")
+                }
             }
-        }
-        Button(onClick = { isSearchVisible = !isSearchVisible; if (!isSearchVisible) { suggestions = emptyList(); searchQuery = "" } }, modifier = Modifier.align(Alignment.TopStart).padding(16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(alpha = 0.6f))) {
-            Icon(Icons.Default.Search, "Search", tint = Color.White); Spacer(modifier = Modifier.size(8.dp)); Text(if (isSearchVisible) "CLOSE" else "SEARCH", color = Color.White)
-        }
-        FloatingActionButton(onClick = { mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().bearing(FollowPuckViewportStateBearing.Constant(0.0)).pitch(0.0).zoom(14.0).build()) }, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), containerColor = Color.Black, contentColor = Color.White) {
-            Icon(Icons.Default.MyLocation, "Locate Me")
         }
     }
 }
