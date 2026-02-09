@@ -24,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb // <--- OPRAVA 1: Import pro barvu
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
@@ -44,11 +45,13 @@ import java.io.IOException
 import com.mapbox.geojson.Point
 import com.mapbox.geojson.Feature
 import com.mapbox.geojson.LineString
+import com.mapbox.maps.CameraOptions
 import com.mapbox.maps.Style
 import com.mapbox.maps.extension.compose.MapEffect
 import com.mapbox.maps.extension.compose.MapboxMap
 import com.mapbox.maps.extension.compose.animation.viewport.rememberMapViewportState
 import com.mapbox.maps.extension.style.layers.addLayer
+import com.mapbox.maps.extension.style.layers.generated.FillExtrusionLayer
 import com.mapbox.maps.extension.style.layers.generated.lineLayer
 import com.mapbox.maps.extension.style.layers.properties.generated.LineCap
 import com.mapbox.maps.extension.style.layers.properties.generated.LineJoin
@@ -56,9 +59,17 @@ import com.mapbox.maps.extension.style.sources.addSource
 import com.mapbox.maps.extension.style.sources.generated.GeoJsonSource
 import com.mapbox.maps.extension.style.sources.generated.geoJsonSource
 import com.mapbox.maps.extension.style.sources.getSource
+import com.mapbox.maps.plugin.animation.MapAnimationOptions
 import com.mapbox.maps.plugin.locationcomponent.location
 import com.mapbox.maps.plugin.viewport.data.FollowPuckViewportStateBearing
 import com.mapbox.maps.plugin.viewport.data.FollowPuckViewportStateOptions
+
+// --- OPRAVA 2: Správné importy pro Výrazy (Expressions) ---
+// Místo "dsl" používáme "Expression.Companion", což funguje se závorkami ()
+import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.eq
+import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.get
+import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.literal
+import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.interpolate
 
 // --- Datová třída pro našeptávač ---
 data class SearchSuggestion(
@@ -131,6 +142,7 @@ fun InstrumentCluster(modifier: Modifier = Modifier) {
 fun Viewport(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
+
     val mapViewportState = rememberMapViewportState {
         setCameraOptions {
             center(Point.fromLngLat(14.4378, 50.0755)) // Praha
@@ -139,19 +151,37 @@ fun Viewport(modifier: Modifier = Modifier) {
         }
     }
 
-    // Search State
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var routeGeoJson by remember { mutableStateOf<String?>(null) }
-
-    // Autocomplete State
     var suggestions by remember { mutableStateOf<List<SearchSuggestion>>(emptyList()) }
+    var is3dMode by remember { mutableStateOf(false) }
+
     val scope = rememberCoroutineScope()
 
-    // Debounce Logic (Čeká, až uživatel dopíše, než začne hledat)
+    LaunchedEffect(is3dMode) {
+        val currentCamera = mapViewportState.cameraState
+        val currentZoom = currentCamera?.zoom ?: 11.0
+        val currentCenter = currentCamera?.center ?: Point.fromLngLat(14.4378, 50.0755)
+        val currentBearing = currentCamera?.bearing ?: 0.0
+
+        val targetPitch = if (is3dMode) 60.0 else 0.0
+        val targetZoom = if (is3dMode && currentZoom < 15.0) 16.0 else currentZoom
+
+        mapViewportState.flyTo(
+            CameraOptions.Builder()
+                .center(currentCenter)
+                .zoom(targetZoom)
+                .pitch(targetPitch)
+                .bearing(currentBearing)
+                .build(),
+            MapAnimationOptions.Builder().duration(1500).build()
+        )
+    }
+
     LaunchedEffect(searchQuery) {
         if (searchQuery.length > 2) {
-            delay(500) // Počkej 500ms po posledním úhozu
+            delay(500)
             fetchSuggestions(searchQuery, context) { results ->
                 suggestions = results
             }
@@ -164,10 +194,24 @@ fun Viewport(modifier: Modifier = Modifier) {
         TeslaMap(
             modifier = Modifier.fillMaxSize(),
             mapViewportState = mapViewportState,
-            routeGeoJson = routeGeoJson
+            routeGeoJson = routeGeoJson,
+            is3dMode = is3dMode
         )
 
-        // Search Interface
+        FloatingActionButton(
+            onClick = { is3dMode = !is3dMode },
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 16.dp, bottom = 80.dp),
+            containerColor = if (is3dMode) Color.Cyan else Color.Black,
+            contentColor = if (is3dMode) Color.Black else Color.White
+        ) {
+            Text(
+                text = if (is3dMode) "3D" else "2D",
+                fontWeight = FontWeight.Bold
+            )
+        }
+
         if (isSearchVisible) {
             Column(
                 modifier = Modifier
@@ -175,7 +219,6 @@ fun Viewport(modifier: Modifier = Modifier) {
                     .padding(top = 16.dp)
                     .fillMaxWidth(0.6f)
             ) {
-                // Search Bar
                 TextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
@@ -203,12 +246,11 @@ fun Viewport(modifier: Modifier = Modifier) {
                     }
                 )
 
-                // Suggestions List (Slider/List)
                 if (suggestions.isNotEmpty()) {
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 250.dp) // Maximální výška seznamu
+                            .heightIn(max = 250.dp)
                             .background(Color.Black.copy(alpha = 0.9f), shape = RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))
                     ) {
                         items(suggestions) { place ->
@@ -216,17 +258,14 @@ fun Viewport(modifier: Modifier = Modifier) {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        // 1. Uživatel vybral místo
                                         searchQuery = place.name
-                                        suggestions = emptyList() // Schovat seznam
-                                        focusManager.clearFocus() // Schovat klávesnici
+                                        suggestions = emptyList()
+                                        focusManager.clearFocus()
 
-                                        // 2. Spustit navigaci
                                         val cameraState = mapViewportState.cameraState
-                                        val currentPoint = cameraState.center ?: Point.fromLngLat(14.4378, 50.0755)
+                                        val currentPoint = cameraState?.center ?: Point.fromLngLat(14.4378, 50.0755)
 
                                         scope.launch(Dispatchers.IO) {
-                                            // Použijeme přesné souřadnice vybraného místa (ne text)
                                             fetchRouteFromPoints(currentPoint, place.point, context) { newGeoJson ->
                                                 scope.launch(Dispatchers.Main) {
                                                     routeGeoJson = newGeoJson
@@ -249,7 +288,6 @@ fun Viewport(modifier: Modifier = Modifier) {
             }
         }
 
-        // Search Button
         Button(
             onClick = {
                 isSearchVisible = !isSearchVisible
@@ -266,7 +304,6 @@ fun Viewport(modifier: Modifier = Modifier) {
             Text(if (isSearchVisible) "CLOSE" else "SEARCH", color = Color.White)
         }
 
-        // Locate Me Button
         FloatingActionButton(
             onClick = {
                 mapViewportState.transitionToFollowPuckState(
@@ -290,7 +327,8 @@ fun Viewport(modifier: Modifier = Modifier) {
 fun TeslaMap(
     modifier: Modifier = Modifier,
     mapViewportState: com.mapbox.maps.extension.compose.animation.viewport.MapViewportState,
-    routeGeoJson: String? = null
+    routeGeoJson: String? = null,
+    is3dMode: Boolean = false
 ) {
     val context = LocalContext.current
     var locationPermissionGranted by remember { mutableStateOf(false) }
@@ -335,6 +373,24 @@ fun TeslaMap(
                         }
                     )
                 }
+
+                // 2. VRSTVA PRO 3D BUDOVY
+                if (!style.styleLayerExists("3d-buildings")) {
+                    val buildingLayer = FillExtrusionLayer("3d-buildings", "composite")
+                    buildingLayer.sourceLayer("building")
+                    // TEĎ UŽ TENTO ZÁPIS BUDE FUNGOVAT
+                    buildingLayer.filter(eq(get("extrude"), literal("true")))
+                    buildingLayer.minZoom(15.0)
+
+                    // Používáme toArgb()
+                    buildingLayer.fillExtrusionColor(Color.DarkGray.toArgb())
+                    buildingLayer.fillExtrusionOpacity(0.8)
+
+                    buildingLayer.fillExtrusionHeight(get("height"))
+                    buildingLayer.fillExtrusionBase(get("min_height"))
+
+                    style.addLayer(buildingLayer)
+                }
             }
 
             if (locationPermissionGranted) {
@@ -358,24 +414,20 @@ fun TeslaMap(
     }
 }
 
-// --- 1. Funkce pro Našeptávač (Získá seznam míst) ---
 fun fetchSuggestions(query: String, context: Context, onResult: (List<SearchSuggestion>) -> Unit) {
     val accessToken = context.getString(R.string.mapbox_access_token)
     val client = OkHttpClient()
-    // limit=5: Chceme max 5 návrhů
     val url = "https://api.mapbox.com/geocoding/v5/mapbox.places/${query}.json?access_token=$accessToken&limit=5&autocomplete=true"
     val request = Request.Builder().url(url).build()
 
     client.newCall(request).enqueue(object : okhttp3.Callback {
         override fun onFailure(call: okhttp3.Call, e: IOException) { e.printStackTrace() }
-
         override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
             response.body?.string()?.let { jsonString ->
                 try {
                     val json = JSONObject(jsonString)
                     val features = json.optJSONArray("features")
                     val results = mutableListOf<SearchSuggestion>()
-
                     if (features != null) {
                         for (i in 0 until features.length()) {
                             val feature = features.getJSONObject(i)
@@ -392,20 +444,16 @@ fun fetchSuggestions(query: String, context: Context, onResult: (List<SearchSugg
     })
 }
 
-// --- 2. Funkce pro Trasování (Když už máme přesný bod z našeptávače) ---
 fun fetchRouteFromPoints(origin: Point, destination: Point, context: Context, onRouteFound: (String) -> Unit) {
     val accessToken = context.getString(R.string.mapbox_access_token)
     val client = OkHttpClient()
-
     val url = "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/" +
             "${origin.longitude()},${origin.latitude()};${destination.longitude()},${destination.latitude()}" +
             "?geometries=geojson&overview=full&access_token=$accessToken"
-
     val request = Request.Builder().url(url).build()
 
     client.newCall(request).enqueue(object : okhttp3.Callback {
         override fun onFailure(call: okhttp3.Call, e: IOException) { e.printStackTrace() }
-
         override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
             response.body?.string()?.let { jsonString ->
                 try {
@@ -414,11 +462,7 @@ fun fetchRouteFromPoints(origin: Point, destination: Point, context: Context, on
                     if (routes != null && routes.length() > 0) {
                         val geometry = routes.getJSONObject(0).getJSONObject("geometry")
                         val featureString = """
-                            {
-                              "type": "Feature",
-                              "properties": {},
-                              "geometry": $geometry
-                            }
+                            { "type": "Feature", "properties": {}, "geometry": $geometry }
                         """.trimIndent()
                         onRouteFound(featureString)
                     }
