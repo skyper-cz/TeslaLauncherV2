@@ -52,7 +52,7 @@ import com.mapbox.geojson.Point
 import com.mapbox.maps.extension.compose.MapEffect
 import com.mapbox.maps.extension.compose.MapboxMap
 import com.mapbox.maps.extension.compose.animation.viewport.rememberMapViewportState
-import com.mapbox.maps.extension.compose.style.MapStyle
+import com.mapbox.maps.extension.compose.MapEffect
 import com.mapbox.maps.Style
 import com.mapbox.maps.plugin.locationcomponent.location
 
@@ -65,10 +65,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         // Initialize MapLibre - Not needed for Mapbox v10+ (auto-init or different flow)
         // Mapbox.getInstance(this) is invalid in v10+, it reads token from manifest/resources
-        
+
         // Request permissions
         requestPermissionLauncher.launch(
             arrayOf(
@@ -177,7 +177,7 @@ fun InstrumentCluster(modifier: Modifier = Modifier) {
                 tint = Color.Green
             )
         }
-        
+
         // Car Icon / Gear or other info can go here
          Icon(
             imageVector = Icons.Default.DirectionsCar,
@@ -229,20 +229,18 @@ fun Viewport(modifier: Modifier = Modifier) {
 
 @Composable
 fun TeslaMap(modifier: Modifier = Modifier) {
+
+    val mapViewportState = rememberMapViewportState {
+        setCameraOptions {
+            center(Point.fromLngLat(14.4378, 50.0755)) // Praha
+            zoom(11.0)
+            pitch(0.0)
+        }
+    }
     // Mapbox automatically handles lifecycle in the Composable
     MapboxMap(
-        modifier = modifier,
-        mapViewportState = rememberMapViewportState {
-            setCameraOptions {
-                zoom(12.0)
-                center(Point.fromLngLat(0.0, 0.0)) // Default to null island or user location
-                pitch(0.0)
-                bearing(0.0)
-            }
-        },
-        style = {
-            MapStyle(style = Style.DARK)
-        }
+        modifier = Modifier.fillMaxSize(),
+        mapViewportState = mapViewportState
     ) {
         // Enable User Location (Puck)
         MapEffect(Unit) { mapView ->
