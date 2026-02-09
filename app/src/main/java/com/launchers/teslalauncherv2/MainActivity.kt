@@ -3,6 +3,7 @@ package com.launchers.teslalauncherv2
 import android.Manifest
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,13 +49,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.runtime.LaunchedEffect
 import com.mapbox.geojson.Point
 import com.mapbox.maps.extension.compose.MapEffect
 import com.mapbox.maps.extension.compose.MapboxMap
 import com.mapbox.maps.extension.compose.animation.viewport.rememberMapViewportState
-import com.mapbox.maps.extension.compose.MapEffect
 import com.mapbox.maps.Style
 import com.mapbox.maps.plugin.locationcomponent.location
+import com.mapbox.maps.extension.style.sources.addSource
+import com.mapbox.maps.extension.style.layers.addLayer
+import com.mapbox.maps.extension.style.sources.generated.geoJsonSource
+import com.mapbox.maps.extension.style.layers.generated.lineLayer
+import com.mapbox.maps.extension.style.layers.properties.generated.LineCap
+import com.mapbox.maps.extension.style.layers.properties.generated.LineJoin
 
 class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
@@ -229,6 +236,24 @@ fun Viewport(modifier: Modifier = Modifier) {
 
 @Composable
 fun TeslaMap(modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+
+    // 1. Permission Logic
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val granted = permissions.getOrDefault(Manifest.permission.ACCESS_FINE_LOCATION, false) ||
+                      permissions.getOrDefault(Manifest.permission.ACCESS_COARSE_LOCATION, false)
+    }
+
+    LaunchedEffect(Unit) {
+        permissionLauncher.launch(
+            arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            )
+        )
+    }
 
     val mapViewportState = rememberMapViewportState {
         setCameraOptions {
@@ -237,16 +262,58 @@ fun TeslaMap(modifier: Modifier = Modifier) {
             pitch(0.0)
         }
     }
+
     // Mapbox automatically handles lifecycle in the Composable
     MapboxMap(
         modifier = Modifier.fillMaxSize(),
         mapViewportState = mapViewportState
     ) {
-        // Enable User Location (Puck)
+        // Enable User Location (Puck) and Route Layer
         MapEffect(Unit) { mapView ->
-            mapView.location.updateSettings {
-                enabled = true
-                pulsingEnabled = true
+            // Enable Location
+            mapView.location.enabled = true
+
+            // Draw Route
+            mapView.mapboxMap.getStyle { style ->
+                val sourceId = "route-source"
+                val layerId = "route-layer"
+
+                // Add Source
+                if (!style.styleSourceExists(sourceId)) {
+                   val dummyGeoJson = """
+                        {
+                          "type": "Feature",
+                          "properties": {},
+                          "geometry": {
+                            "type": "LineString",
+                            "coordinates": [
+                              [14.40, 50.07],
+                              [14.42, 50.08],
+                              [14.45, 50.08],
+                              [14.48, 50.06]
+                            ]
+                          }
+                        }
+                    """.trimIndent()
+
+                    style.addSource(
+                        geoJsonSource(sourceId) {
+                            data(dummyGeoJson)
+                        }
+                    )
+                }
+
+                // Add Layer
+                if (!style.styleLayerExists(layerId)) {
+                    style.addLayer(
+                        lineLayer(layerId, sourceId) {
+                            lineColor("#00B0FF") // Tesla/Neon Blue
+                            lineWidth(6.0)
+                            lineCap(LineCap.ROUND)
+                            lineJoin(LineJoin.ROUND)
+                        }
+                    )
+                }
             }
         }
     }
