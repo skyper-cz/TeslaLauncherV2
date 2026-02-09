@@ -52,6 +52,12 @@ android {
         buildConfig = true
         resValues = true
     }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {
