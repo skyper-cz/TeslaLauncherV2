@@ -10,7 +10,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -22,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.tooling.preview.Preview
@@ -29,9 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-// --- HTTP Klient (Místo rozbité knihovny) ---
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
@@ -56,6 +59,12 @@ import com.mapbox.maps.extension.style.sources.getSource
 import com.mapbox.maps.plugin.locationcomponent.location
 import com.mapbox.maps.plugin.viewport.data.FollowPuckViewportStateBearing
 import com.mapbox.maps.plugin.viewport.data.FollowPuckViewportStateOptions
+
+// --- Datová třída pro našeptávač ---
+data class SearchSuggestion(
+    val name: String,
+    val point: Point
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -121,6 +130,7 @@ fun InstrumentCluster(modifier: Modifier = Modifier) {
 @Composable
 fun Viewport(modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val mapViewportState = rememberMapViewportState {
         setCameraOptions {
             center(Point.fromLngLat(14.4378, 50.0755)) // Praha
@@ -129,10 +139,26 @@ fun Viewport(modifier: Modifier = Modifier) {
         }
     }
 
+    // Search State
     var isSearchVisible by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var routeGeoJson by remember { mutableStateOf<String?>(null) }
+
+    // Autocomplete State
+    var suggestions by remember { mutableStateOf<List<SearchSuggestion>>(emptyList()) }
     val scope = rememberCoroutineScope()
+
+    // Debounce Logic (Čeká, až uživatel dopíše, než začne hledat)
+    LaunchedEffect(searchQuery) {
+        if (searchQuery.length > 2) {
+            delay(500) // Počkej 500ms po posledním úhozu
+            fetchSuggestions(searchQuery, context) { results ->
+                suggestions = results
+            }
+        } else {
+            suggestions = emptyList()
+        }
+    }
 
     Box(modifier = modifier.fillMaxWidth().background(Color.DarkGray)) {
         TeslaMap(
@@ -141,45 +167,97 @@ fun Viewport(modifier: Modifier = Modifier) {
             routeGeoJson = routeGeoJson
         )
 
+        // Search Interface
         if (isSearchVisible) {
-            TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Navigate to...", color = Color.Gray) },
-                singleLine = true,
+            Column(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .padding(top = 16.dp)
                     .fillMaxWidth(0.6f)
-                    .background(Color.Black, shape = RoundedCornerShape(8.dp)),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.Black,
-                    unfocusedContainerColor = Color.Black,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
-                ),
-                keyboardActions = KeyboardActions(
-                    onGo = {
-                        val cameraState = mapViewportState.cameraState
-                        val currentPoint = cameraState.center ?: Point.fromLngLat(14.4378, 50.0755)
-
-                        scope.launch(Dispatchers.IO) {
-                            // VOLÁME NOVOU, BEZPEČNOU FUNKCI
-                            fetchRouteManual(searchQuery, currentPoint, context) { newGeoJson ->
-                                scope.launch(Dispatchers.Main) {
-                                    routeGeoJson = newGeoJson
-                                    isSearchVisible = false
-                                }
+            ) {
+                // Search Bar
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Where to go?", color = Color.Gray) },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black, shape = RoundedCornerShape(8.dp)),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Black,
+                        unfocusedContainerColor = Color.Black,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    keyboardActions = KeyboardActions(
+                        onDone = { focusManager.clearFocus() }
+                    ),
+                    keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Done),
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = ""; suggestions = emptyList() }) {
+                                Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.Gray)
                             }
                         }
                     }
-                ),
-                keyboardOptions = KeyboardOptions.Default.copy(imeAction = ImeAction.Go)
-            )
+                )
+
+                // Suggestions List (Slider/List)
+                if (suggestions.isNotEmpty()) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 250.dp) // Maximální výška seznamu
+                            .background(Color.Black.copy(alpha = 0.9f), shape = RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp))
+                    ) {
+                        items(suggestions) { place ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // 1. Uživatel vybral místo
+                                        searchQuery = place.name
+                                        suggestions = emptyList() // Schovat seznam
+                                        focusManager.clearFocus() // Schovat klávesnici
+
+                                        // 2. Spustit navigaci
+                                        val cameraState = mapViewportState.cameraState
+                                        val currentPoint = cameraState.center ?: Point.fromLngLat(14.4378, 50.0755)
+
+                                        scope.launch(Dispatchers.IO) {
+                                            // Použijeme přesné souřadnice vybraného místa (ne text)
+                                            fetchRouteFromPoints(currentPoint, place.point, context) { newGeoJson ->
+                                                scope.launch(Dispatchers.Main) {
+                                                    routeGeoJson = newGeoJson
+                                                    isSearchVisible = false
+                                                }
+                                            }
+                                        }
+                                    }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.LocationOn, contentDescription = null, tint = Color.Cyan, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Text(place.name, color = Color.White, fontSize = 14.sp)
+                            }
+                            HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp)
+                        }
+                    }
+                }
+            }
         }
 
+        // Search Button
         Button(
-            onClick = { isSearchVisible = !isSearchVisible },
+            onClick = {
+                isSearchVisible = !isSearchVisible
+                if (!isSearchVisible) {
+                    suggestions = emptyList()
+                    searchQuery = ""
+                }
+            },
             modifier = Modifier.align(Alignment.TopStart).padding(16.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color.Black.copy(alpha = 0.6f))
         ) {
@@ -188,6 +266,7 @@ fun Viewport(modifier: Modifier = Modifier) {
             Text(if (isSearchVisible) "CLOSE" else "SEARCH", color = Color.White)
         }
 
+        // Locate Me Button
         FloatingActionButton(
             onClick = {
                 mapViewportState.transitionToFollowPuckState(
@@ -279,70 +358,69 @@ fun TeslaMap(
     }
 }
 
-// ---------------------------------------------------------
-// TOTO JE TA "ZÁCHRANNÁ" FUNKCE
-// Nepoužívá knihovnu 'mapbox-services', takže nehrozí konflikt verzí.
-// Prostě si stáhne data jako text a pošle je do mapy.
-// ---------------------------------------------------------
-fun fetchRouteManual(query: String, currentLoc: Point, context: Context, onRouteFound: (String) -> Unit) {
+// --- 1. Funkce pro Našeptávač (Získá seznam míst) ---
+fun fetchSuggestions(query: String, context: Context, onResult: (List<SearchSuggestion>) -> Unit) {
     val accessToken = context.getString(R.string.mapbox_access_token)
     val client = OkHttpClient()
+    // limit=5: Chceme max 5 návrhů
+    val url = "https://api.mapbox.com/geocoding/v5/mapbox.places/${query}.json?access_token=$accessToken&limit=5&autocomplete=true"
+    val request = Request.Builder().url(url).build()
 
-    // 1. Geocoding (Najdi město)
-    val geoUrl = "https://api.mapbox.com/geocoding/v5/mapbox.places/${query}.json?access_token=$accessToken&limit=1"
-    val geoRequest = Request.Builder().url(geoUrl).build()
-
-    client.newCall(geoRequest).enqueue(object : okhttp3.Callback {
-        override fun onFailure(call: okhttp3.Call, e: IOException) {
-            e.printStackTrace()
-        }
+    client.newCall(request).enqueue(object : okhttp3.Callback {
+        override fun onFailure(call: okhttp3.Call, e: IOException) { e.printStackTrace() }
 
         override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
             response.body?.string()?.let { jsonString ->
                 try {
                     val json = JSONObject(jsonString)
                     val features = json.optJSONArray("features")
-                    if (features != null && features.length() > 0) {
-                        val feature = features.getJSONObject(0)
-                        val center = feature.getJSONArray("center")
-                        val destLon = center.getDouble(0)
-                        val destLat = center.getDouble(1)
+                    val results = mutableListOf<SearchSuggestion>()
 
-                        // 2. Navigace (Vypočítat trasu)
-                        val directionsUrl = "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/" +
-                                "${currentLoc.longitude()},${currentLoc.latitude()};$destLon,$destLat" +
-                                "?geometries=geojson&overview=full&access_token=$accessToken"
+                    if (features != null) {
+                        for (i in 0 until features.length()) {
+                            val feature = features.getJSONObject(i)
+                            val name = feature.getString("place_name")
+                            val center = feature.getJSONArray("center")
+                            val point = Point.fromLngLat(center.getDouble(0), center.getDouble(1))
+                            results.add(SearchSuggestion(name, point))
+                        }
+                    }
+                    onResult(results)
+                } catch (e: Exception) { e.printStackTrace() }
+            }
+        }
+    })
+}
 
-                        val dirRequest = Request.Builder().url(directionsUrl).build()
+// --- 2. Funkce pro Trasování (Když už máme přesný bod z našeptávače) ---
+fun fetchRouteFromPoints(origin: Point, destination: Point, context: Context, onRouteFound: (String) -> Unit) {
+    val accessToken = context.getString(R.string.mapbox_access_token)
+    val client = OkHttpClient()
 
-                        client.newCall(dirRequest).enqueue(object : okhttp3.Callback {
-                            override fun onFailure(call: okhttp3.Call, e: IOException) {
-                                e.printStackTrace()
+    val url = "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/" +
+            "${origin.longitude()},${origin.latitude()};${destination.longitude()},${destination.latitude()}" +
+            "?geometries=geojson&overview=full&access_token=$accessToken"
+
+    val request = Request.Builder().url(url).build()
+
+    client.newCall(request).enqueue(object : okhttp3.Callback {
+        override fun onFailure(call: okhttp3.Call, e: IOException) { e.printStackTrace() }
+
+        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+            response.body?.string()?.let { jsonString ->
+                try {
+                    val json = JSONObject(jsonString)
+                    val routes = json.optJSONArray("routes")
+                    if (routes != null && routes.length() > 0) {
+                        val geometry = routes.getJSONObject(0).getJSONObject("geometry")
+                        val featureString = """
+                            {
+                              "type": "Feature",
+                              "properties": {},
+                              "geometry": $geometry
                             }
-
-                            override fun onResponse(call: okhttp3.Call, dirResponse: okhttp3.Response) {
-                                dirResponse.body?.string()?.let { dirJsonString ->
-                                    try {
-                                        val dirJson = JSONObject(dirJsonString)
-                                        val routes = dirJson.optJSONArray("routes")
-                                        if (routes != null && routes.length() > 0) {
-                                            val geometry = routes.getJSONObject(0).getJSONObject("geometry")
-
-                                            // Vytvoříme GeoJSON Feature ručně
-                                            val featureString = """
-                                                {
-                                                  "type": "Feature",
-                                                  "properties": {},
-                                                  "geometry": $geometry
-                                                }
-                                            """.trimIndent()
-
-                                            onRouteFound(featureString)
-                                        }
-                                    } catch (e: Exception) { e.printStackTrace() }
-                                }
-                            }
-                        })
+                        """.trimIndent()
+                        onRouteFound(featureString)
                     }
                 } catch (e: Exception) { e.printStackTrace() }
             }
