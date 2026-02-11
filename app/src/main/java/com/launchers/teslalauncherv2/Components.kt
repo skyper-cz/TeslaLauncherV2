@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border // <--- TENTO IMPORT CHYBĚL
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -21,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -48,7 +50,7 @@ fun sendMediaKeyEvent(context: Context, keyCode: Int) {
     audioManager.dispatchMediaKeyEvent(eventUp)
 }
 
-// --- 1. INSTRUMENT CLUSTER (Denní režim) ---
+// --- 1. INSTRUMENT CLUSTER ---
 @Composable
 fun InstrumentCluster(
     modifier: Modifier = Modifier,
@@ -56,6 +58,7 @@ fun InstrumentCluster(
     speed: Int = 0,
     battery: Int = 80,
     isDemoMode: Boolean = false,
+    gpsStatus: String? = null,
     onDemoToggle: () -> Unit = {}
 ) {
     val animatedSpeed by animateIntAsState(targetValue = speed, animationSpec = tween(500), label = "Speed")
@@ -67,10 +70,32 @@ fun InstrumentCluster(
             .padding(16.dp)
             .statusBarsPadding()
     ) {
-        // LEVÁ ČÁST (Navigace)
+        // LEVÁ ČÁST (Navigace nebo GPS Warning)
         Box(modifier = Modifier.align(Alignment.CenterStart)) {
-            if (instruction != null) {
-                Column {
+            Column {
+                // --- VAROVÁNÍ GPS ---
+                if (gpsStatus != null && !isDemoMode) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .background(Color(0xFF330000), shape = RoundedCornerShape(8.dp)) // Tmavě červené pozadí
+                            .border(1.dp, Color.Red, RoundedCornerShape(8.dp)) // Červený rámeček
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                    ) {
+                        Icon(Icons.Default.SatelliteAlt, "No GPS", tint = Color.Red, modifier = Modifier.size(24.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = gpsStatus,
+                            color = Color.Red,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // Navigace
+                if (instruction != null) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         val icon = when {
                             instruction.modifier?.contains("left") == true -> Icons.AutoMirrored.Filled.ArrowBack
@@ -80,8 +105,6 @@ fun InstrumentCluster(
                         }
                         Icon(icon, null, tint = Color.Cyan, modifier = Modifier.size(48.dp))
                         Spacer(modifier = Modifier.width(12.dp))
-
-                        // Zde používáme nové formátování (km/m)
                         Text(
                             text = formatDistance(instruction.distance),
                             fontSize = 32.sp,
@@ -90,14 +113,15 @@ fun InstrumentCluster(
                         )
                     }
                     Text(instruction.text, color = Color.LightGray, fontSize = 16.sp, maxLines = 2, modifier = Modifier.widthIn(max = 200.dp))
+                } else if (gpsStatus == null) {
+                    // Hodiny
+                    Text("12:00", fontSize = 28.sp, fontWeight = FontWeight.Medium, color = Color.Gray)
                 }
-            } else {
-                Text("12:00", fontSize = 28.sp, fontWeight = FontWeight.Medium, color = Color.Gray)
             }
         }
 
         // STŘED (Tachometr)
-        val alignmentBias by animateFloatAsState(targetValue = if (instruction != null) 0.5f else 0.0f, animationSpec = tween(1000), label = "Shift")
+        val alignmentBias by animateFloatAsState(targetValue = if (instruction != null || gpsStatus != null) 0.5f else 0.0f, animationSpec = tween(1000), label = "Shift")
         Column(
             modifier = Modifier
                 .align(BiasAlignment(alignmentBias, 0f))
@@ -124,29 +148,26 @@ fun NightPanelScreen(
     instruction: NavInstruction?,
     onExit: () -> Unit
 ) {
-    // Animace rychlosti i v Night Panelu
     val animatedSpeed by animateIntAsState(targetValue = speed, animationSpec = tween(500), label = "Speed")
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
-            .clickable { onExit() }, // Dotykem probudíš
+            .clickable { onExit() },
         contentAlignment = Alignment.Center
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            // LOGIKA NAVIGACE V NIGHT PANELU
             if (instruction != null) {
-                val isNear = instruction.distance < 2000 // Hranice 2 km
+                val isNear = instruction.distance < 2000
 
                 if (isNear) {
-                    // --- BLÍZKO (Pod 2 km): Ukázat šipku a metry ---
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(bottom = 32.dp) // Mezera nad rychlostí
+                        modifier = Modifier.padding(bottom = 32.dp)
                     ) {
                         val icon = when {
                             instruction.modifier?.contains("left") == true -> Icons.AutoMirrored.Filled.ArrowBack
@@ -164,8 +185,6 @@ fun NightPanelScreen(
                         )
                     }
                 } else {
-                    // --- DALEKO (Nad 2 km): Jen text ---
-                    // Decentní text nahoře, žádná šipka
                     Text(
                         text = "Next turn in ${formatDistance(instruction.distance)}",
                         color = Color.Gray,
@@ -176,10 +195,9 @@ fun NightPanelScreen(
                 }
             }
 
-            // --- RYCHLOST (Dominanta Night Panelu) ---
             Text(
                 text = "$animatedSpeed",
-                color = Color(0xFFE0E0E0), // Měkká bílá
+                color = Color(0xFFE0E0E0),
                 fontSize = 140.sp,
                 fontWeight = FontWeight.ExtraBold,
                 style = MaterialTheme.typography.displayLarge
@@ -191,10 +209,9 @@ fun NightPanelScreen(
             )
         }
 
-        // Nápověda dole (volitelné)
         Text(
             text = "Tap screen to wake",
-            color = Color(0xFF333333), // Velmi tmavá šedá, aby nerušila
+            color = Color(0xFF333333),
             fontSize = 12.sp,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -300,6 +317,15 @@ fun Dock(
     }
 }
 
+@Composable
+fun AppMenuItem(icon: ImageVector, label: String, isActive: Boolean = false, onClick: () -> Unit = {}) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 4.dp)) {
+        Icon(icon, null, tint = if (isActive) Color.Cyan else Color.White, modifier = Modifier.size(32.dp))
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(label, color = if (isActive) Color.Cyan else Color.White, fontSize = 16.sp)
+    }
+}
+
 // --- 5. GEAR SELECTOR (Tesla Slider Style) ---
 @Composable
 fun GearSelector(
@@ -307,29 +333,26 @@ fun GearSelector(
     onGearSelected: (String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    // Pozadí "Slideru" - svislý pruh
     Column(
         modifier = modifier
-            .width(72.dp) // Užší, elegantnější
-            .fillMaxHeight(0.6f) // Ne přes celou výšku, jen 60%
+            .width(72.dp)
+            .fillMaxHeight(0.6f)
             .background(
-                color = Color(0xFF222222).copy(alpha = 0.9f), // Tmavě šedá, skoro neprůhledná
-                shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp) // Zaoblené jen vlevo (přilepené k pravému okraji)
+                color = Color(0xFF222222).copy(alpha = 0.9f),
+                shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
             )
             .padding(vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceEvenly // Rovnoměrně rozprostřít P R N D
+        verticalArrangement = Arrangement.SpaceEvenly
     ) {
         val gears = listOf("P", "R", "N", "D")
 
         gears.forEach { gear ->
             val isSelected = gear == currentGear
 
-            // Design tlačítka
             Box(
                 modifier = Modifier
-                    .size(56.dp) // Dostatečně velké pro prst
-                    // Pokud je vybráno, má pozadí (jako tlačítko)
+                    .size(56.dp)
                     .background(
                         color = if (isSelected) Color(0xFF3E3E3E) else Color.Transparent,
                         shape = RoundedCornerShape(12.dp)
@@ -341,26 +364,17 @@ fun GearSelector(
                     text = gear,
                     fontSize = if (isSelected) 28.sp else 22.sp,
                     fontWeight = FontWeight.Bold,
-                    // Barvy jako v Tesle
                     color = if (isSelected) {
                         when (gear) {
                             "P" -> Color.Red
                             "R" -> Color.White
                             "N" -> Color.White
-                            "D" -> Color(0xFF00FF00) // Zelená
+                            "D" -> Color(0xFF00FF00)
                             else -> Color.White
                         }
-                    } else Color.Gray // Neaktivní jsou šedé
+                    } else Color.Gray
                 )
             }
         }
-    }
-}
-@Composable
-fun AppMenuItem(icon: ImageVector, label: String, isActive: Boolean = false, onClick: () -> Unit = {}) {
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { onClick() }.padding(vertical = 4.dp)) {
-        Icon(icon, null, tint = if (isActive) Color.Cyan else Color.White, modifier = Modifier.size(32.dp))
-        Spacer(modifier = Modifier.width(12.dp))
-        Text(label, color = if (isActive) Color.Cyan else Color.White, fontSize = 16.sp)
     }
 }

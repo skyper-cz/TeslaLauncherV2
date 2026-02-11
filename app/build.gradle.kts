@@ -23,7 +23,7 @@ android {
     defaultConfig {
         applicationId = "com.launchers.teslalauncherv2"
         minSdk = 29
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 

@@ -9,6 +9,7 @@ data class SearchSuggestion(
 
 data class NavInstruction(
     val text: String,
-    val distance: Int,
-    val modifier: String?
+    var distance: Int, // Změněno na 'var', abychom to mohli aktualizovat
+    val modifier: String?,
+    val maneuverPoint: Point? // NOVÉ: Souřadnice, kde máme zatočit
 )

@@ -63,19 +63,22 @@ fun fetchRouteManual(origin: Point, destination: Point, context: Context, onRout
                         val legs = route.getJSONArray("legs")
                         if (legs.length() > 0) {
                             val steps = legs.getJSONObject(0).getJSONArray("steps")
-                            if (steps.length() > 1) {
-                                val step = steps.getJSONObject(1)
+
+                            // Bereme první krok (nebo druhý, pokud je první jen "vyjeďte")
+                            val stepIndex = if (steps.length() > 1) 1 else 0
+
+                            if (steps.length() > 0) {
+                                val step = steps.getJSONObject(stepIndex)
                                 val maneuver = step.getJSONObject("maneuver")
+                                val location = maneuver.getJSONArray("location") // Souřadnice manévru
+                                val maneuverPoint = Point.fromLngLat(location.getDouble(0), location.getDouble(1))
+
                                 val text = maneuver.getString("instruction")
                                 val distance = step.getDouble("distance").toInt()
                                 val modifier = if (maneuver.has("modifier")) maneuver.getString("modifier") else null
-                                navInstruction = NavInstruction(text, distance, modifier)
-                            } else if (steps.length() > 0) {
-                                val step = steps.getJSONObject(0)
-                                val maneuver = step.getJSONObject("maneuver")
-                                val text = maneuver.getString("instruction")
-                                val distance = step.getDouble("distance").toInt()
-                                navInstruction = NavInstruction(text, distance, null)
+
+                                // Uložíme i maneuverPoint
+                                navInstruction = NavInstruction(text, distance, modifier, maneuverPoint)
                             }
                         }
                         onRouteFound(featureString, navInstruction)
