@@ -7,6 +7,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -77,6 +78,9 @@ import com.mapbox.maps.extension.style.expressions.generated.Expression.Companio
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.get
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.literal
 
+// !!! ZDE SI NASTAV SVOU MAC ADRESU OBD ADAPTÉRU !!!
+const val OBD_MAC_ADDRESS = "AA:BB:CC:11:22:33"
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -88,6 +92,12 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // Důležité: Když aplikaci zabiješ, odpojíme OBD
+    override fun onDestroy() {
+        super.onDestroy()
+        ObdDataManager.stop()
     }
 }
 
@@ -102,7 +112,6 @@ fun TeslaLayout() {
     val context = LocalContext.current
 
     // --- STAVY ---
-    // Načítáme stav auta z OBD Manageru (to zajistí, že se tachometr hýbe)
     val carState by ObdDataManager.carState.collectAsState()
 
     var currentInstruction by remember { mutableStateOf<NavInstruction?>(null) }
@@ -112,11 +121,12 @@ fun TeslaLayout() {
     var currentGear by rememberSaveable { mutableStateOf("P") }
     var gpsStatus by remember { mutableStateOf<String?>("INIT...") }
 
-    // --- LOGIKA RYCHLOSTI ---
-    // Pokud máme data z OBD (nebo Demo), bereme je. Jinak GPS.
-    val finalSpeed = if (carState.isConnected || carState.isDemoMode) carState.speed else currentSpeedGps
+    // Rychlost: Preferujeme OBD, pokud není, bereme GPS
+    val finalSpeed = if (carState.isConnected) carState.speed else currentSpeedGps
 
-    // --- POVOLENÍ ---
+    // --- OPRÁVNĚNÍ (GPS + KAMERA + BLUETOOTH) ---
+
+    // 1. GPS
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
         onResult = { permissions ->
@@ -126,9 +136,19 @@ fun TeslaLayout() {
         }
     )
 
+    // 2. KAMERA (pro zpátečku)
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { isGranted -> if (isGranted) currentGear = "R" }
+    )
+
+    // 3. BLUETOOTH (pro OBD) - Nové!
+    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions(),
+        onResult = {
+            // Po udělení oprávnění se zkusíme připojit
+            ObdDataManager.connect(context, OBD_MAC_ADDRESS)
+        }
     )
 
     fun tryShiftTo(gear: String) {
@@ -138,15 +158,39 @@ fun TeslaLayout() {
         } else currentGear = gear
     }
 
-    // --- SPUŠTĚNÍ DEMO MÓDU (DOČASNĚ) ---
+    // --- START APLIKACE A PŘIPOJENÍ ---
     LaunchedEffect(Unit) {
-        // TOTO SPUSTÍ SIMULACI JÍZDY! (Až budeš mít adaptér, smaž to)
-        ObdDataManager.startDemoMode()
+        // A) Inicializace Bluetooth připojení
+        if (Build.VERSION.SDK_INT >= 31) {
+            // Android 12 a novější potřebuje explicitní BLUETOOTH_CONNECT
+            val permissions = arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+            // Zkusíme rovnou požádat
+            bluetoothPermissionLauncher.launch(permissions)
+        } else {
+            // Starší Androidy mají BT v manifestu, připojujeme rovnou
+            ObdDataManager.connect(context, OBD_MAC_ADDRESS)
+        }
 
-        while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
+        // B) Aktualizace baterie každou minutu
+        while (true) {
+            batteryLevel = getBatteryLevel(context)
+            delay(60000)
+        }
     }
 
-    // --- GPS LOGIKA (OPRAVENÝ NETWORK ERROR) ---
+    // --- ÚKLID PŘI ZAVŘENÍ ---
+    // Toto zajistí, že když opustíš obrazovku (ale ne celou appku), spojení se ukončí
+    // Pokud chceš, aby to běželo na pozadí, tento blok vymaž a nech jen onDestroy v Activitě
+    DisposableEffect(Unit) {
+        onDispose {
+            ObdDataManager.stop()
+        }
+    }
+
+    // --- GPS LOGIKA ---
     LaunchedEffect(gpsStatus) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val hasPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -162,7 +206,6 @@ fun TeslaLayout() {
                         gpsStatus = null
                         if (location.hasSpeed()) currentSpeedGps = (location.speed * 3.6f).toInt()
 
-                        // Navigace logika...
                         val instruction = currentInstruction
                         if (instruction?.maneuverPoint != null) {
                             val target = Location("T"); target.latitude = instruction.maneuverPoint.latitude(); target.longitude = instruction.maneuverPoint.longitude()
@@ -179,7 +222,6 @@ fun TeslaLayout() {
                 if (providers.contains(LocationManager.GPS_PROVIDER)) {
                     locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, listener)
                 }
-                // Oprava: Spustíme Network provider jen pokud existuje
                 if (providers.contains(LocationManager.NETWORK_PROVIDER)) {
                     locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0L, 0f, listener)
                 }
@@ -198,13 +240,13 @@ fun TeslaLayout() {
             onExit = { isNightPanel = false })
     } else {
         Column(modifier = Modifier.fillMaxSize()) {
-            // --- INSTRUMENT CLUSTER (BUDÍKY) ---
+            // --- INSTRUMENT CLUSTER ---
             InstrumentCluster(
                 modifier = Modifier.weight(0.25f),
                 carState = carState.copy(speed = finalSpeed),
                 gpsStatus = gpsStatus,
-                batteryLevel = batteryLevel,
-                instruction = currentInstruction
+                batteryLevel = batteryLevel,     // Posíláme baterii
+                instruction = currentInstruction // Posíláme navigaci
             )
 
             // --- HLAVNÍ PLOCHA (MAPA / KAMERA) ---
@@ -230,9 +272,14 @@ fun TeslaLayout() {
     }
 }
 
-
+// ... (zbytek souboru s funkcemi Viewport, TeslaMap, atd. zůstává stejný) ...
+// Ujisti se, že jsi nezapomněl na getBatteryLevel a Viewport funkce na konci souboru
 @Composable
 fun Viewport(modifier: Modifier = Modifier, isNightPanel: Boolean = false, onInstructionUpdated: (NavInstruction?) -> Unit) {
+    // ... tvůj kód viewportu ...
+    // (Zkopíruj sem tu velkou funkci Viewport z minula, pokud ji tu nemáš)
+    // Pro úsporu místa ji sem nedávám celou znovu, pokud ji už máš.
+    // Pokud ji nemáš, napiš, pošlu ji.
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val mapViewportState = rememberMapViewportState { setCameraOptions { center(Point.fromLngLat(14.4378, 50.0755)); zoom(11.0); pitch(0.0) } }
@@ -337,4 +384,3 @@ fun getBatteryLevel(context: Context): Int { val batteryManager = context.getSys
 fun fetchRouteFromPoints(origin: Point, destination: Point, context: Context, onRouteFound: (String) -> Unit) {
     fetchRouteManual(origin, destination, context) { json, _ -> onRouteFound(json) }
 }
-@Preview(showBackground = true, device = "spec:width=1080px,height=2340px,dpi=440") @Composable fun TeslaLayoutPreview() { TeslaLauncherTheme { TeslaLayout() } }
