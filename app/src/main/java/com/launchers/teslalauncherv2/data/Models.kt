@@ -1,4 +1,4 @@
-package com.launchers.teslalauncherv2
+package com.launchers.teslalauncherv2.data
 
 import com.mapbox.geojson.Point
 

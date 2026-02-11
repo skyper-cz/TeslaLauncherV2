@@ -1,9 +1,13 @@
-package com.launchers.teslalauncherv2
+package com.launchers.teslalauncherv2.data
 
 import android.content.Context
+import com.launchers.teslalauncherv2.R
 import com.mapbox.geojson.Point
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
 
@@ -14,9 +18,9 @@ fun fetchSuggestions(query: String, context: Context, onResult: (List<SearchSugg
     val url = "https://api.mapbox.com/geocoding/v5/mapbox.places/${query}.json?access_token=$accessToken&limit=5&autocomplete=true"
     val request = Request.Builder().url(url).build()
 
-    client.newCall(request).enqueue(object : okhttp3.Callback {
-        override fun onFailure(call: okhttp3.Call, e: IOException) { e.printStackTrace() }
-        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) { e.printStackTrace() }
+        override fun onResponse(call: Call, response: Response) {
             response.body?.string()?.let { jsonString ->
                 try {
                     val json = JSONObject(jsonString)
@@ -47,9 +51,9 @@ fun fetchRouteManual(origin: Point, destination: Point, context: Context, onRout
             "?geometries=geojson&steps=true&overview=full&access_token=$accessToken"
     val request = Request.Builder().url(url).build()
 
-    client.newCall(request).enqueue(object : okhttp3.Callback {
-        override fun onFailure(call: okhttp3.Call, e: IOException) { e.printStackTrace() }
-        override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) { e.printStackTrace() }
+        override fun onResponse(call: Call, response: Response) {
             response.body?.string()?.let { jsonString ->
                 try {
                     val json = JSONObject(jsonString)

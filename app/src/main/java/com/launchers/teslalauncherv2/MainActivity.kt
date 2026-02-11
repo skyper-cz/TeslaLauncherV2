@@ -15,7 +15,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -42,12 +41,19 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.launchers.teslalauncherv2.GUI.Dock
+import com.launchers.teslalauncherv2.GUI.GearSelector
+import com.launchers.teslalauncherv2.GUI.InstrumentCluster
+import com.launchers.teslalauncherv2.GUI.NightPanelScreen
+import com.launchers.teslalauncherv2.GUI.ReverseCameraScreen
+import com.launchers.teslalauncherv2.data.NavInstruction
+import com.launchers.teslalauncherv2.data.ObdDataManager
+import com.launchers.teslalauncherv2.data.SearchSuggestion
+import com.launchers.teslalauncherv2.data.fetchRouteManual
+import com.launchers.teslalauncherv2.data.fetchSuggestions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.random.Random
-
-// Mapbox Imports
 import com.mapbox.geojson.Point
 import com.mapbox.maps.CameraOptions
 import com.mapbox.maps.Style
@@ -96,15 +102,19 @@ fun TeslaLayout() {
     val context = LocalContext.current
 
     // --- STAVY ---
+    // Načítáme stav auta z OBD Manageru (to zajistí, že se tachometr hýbe)
+    val carState by ObdDataManager.carState.collectAsState()
+
     var currentInstruction by remember { mutableStateOf<NavInstruction?>(null) }
-    var currentSpeed by remember { mutableIntStateOf(0) }
+    var currentSpeedGps by remember { mutableIntStateOf(0) }
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
-    var isDemoMode by remember { mutableStateOf(false) }
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
     var currentGear by rememberSaveable { mutableStateOf("P") }
-
-    // Stav GPS
     var gpsStatus by remember { mutableStateOf<String?>("INIT...") }
+
+    // --- LOGIKA RYCHLOSTI ---
+    // Pokud máme data z OBD (nebo Demo), bereme je. Jinak GPS.
+    val finalSpeed = if (carState.isConnected || carState.isDemoMode) carState.speed else currentSpeedGps
 
     // --- POVOLENÍ ---
     val locationPermissionLauncher = rememberLauncherForActivityResult(
@@ -128,11 +138,15 @@ fun TeslaLayout() {
         } else currentGear = gear
     }
 
+    // --- SPUŠTĚNÍ DEMO MÓDU (DOČASNĚ) ---
     LaunchedEffect(Unit) {
+        // TOTO SPUSTÍ SIMULACI JÍZDY! (Až budeš mít adaptér, smaž to)
+        ObdDataManager.startDemoMode()
+
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
 
-    // --- HLAVNÍ SMYČKA GPS (OPRAVENÁ CHYBA SÍTĚ) ---
+    // --- GPS LOGIKA (OPRAVENÝ NETWORK ERROR) ---
     LaunchedEffect(gpsStatus) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val hasPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
@@ -146,14 +160,14 @@ fun TeslaLayout() {
                 val listener = object : LocationListener {
                     override fun onLocationChanged(location: Location) {
                         gpsStatus = null
-                        if (!isDemoMode) {
-                            if (location.hasSpeed()) currentSpeed = (location.speed * 3.6f).toInt()
-                            val instruction = currentInstruction
-                            if (instruction?.maneuverPoint != null) {
-                                val target = Location("T"); target.latitude = instruction.maneuverPoint.latitude(); target.longitude = instruction.maneuverPoint.longitude()
-                                val dist = location.distanceTo(target).toInt()
-                                if (dist < 30) currentInstruction = null else currentInstruction = instruction.copy(distance = dist)
-                            }
+                        if (location.hasSpeed()) currentSpeedGps = (location.speed * 3.6f).toInt()
+
+                        // Navigace logika...
+                        val instruction = currentInstruction
+                        if (instruction?.maneuverPoint != null) {
+                            val target = Location("T"); target.latitude = instruction.maneuverPoint.latitude(); target.longitude = instruction.maneuverPoint.longitude()
+                            val dist = location.distanceTo(target).toInt()
+                            if (dist < 30) currentInstruction = null else currentInstruction = instruction.copy(distance = dist)
                         }
                     }
                     override fun onProviderDisabled(p: String) {}
@@ -161,49 +175,39 @@ fun TeslaLayout() {
                     override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
                 }
 
-                // --- BEZPEČNÝ START GPS ---
-                // Zjistíme, co tablet umí, a použijeme jen to, co existuje
                 val providers = locationManager.allProviders
-
                 if (providers.contains(LocationManager.GPS_PROVIDER)) {
                     locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, listener)
                 }
-
-                // Použijeme síť jen pokud existuje (to odstraní červenou chybu)
+                // Oprava: Spustíme Network provider jen pokud existuje
                 if (providers.contains(LocationManager.NETWORK_PROVIDER)) {
                     locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0L, 0f, listener)
                 }
 
             } catch (e: Exception) {
-                // Pokud i tak nastane chyba, vypíšeme ji, ale neshodíme appku
                 gpsStatus = "GPS ERR"
                 e.printStackTrace()
             }
         }
     }
 
-    LaunchedEffect(isDemoMode, currentGear) {
-        if (isDemoMode && currentGear == "D") {
-            while (isDemoMode) {
-                while (currentSpeed < 130 && isDemoMode) { currentSpeed += Random.nextInt(1, 4); delay(100) }
-                while (currentSpeed > 0 && isDemoMode) { currentSpeed -= Random.nextInt(1, 5); delay(100) }
-            }
-        } else if (currentGear == "P" && !isDemoMode) currentSpeed = 0
-    }
-
     if (isNightPanel) {
-        NightPanelScreen(speed = currentSpeed, instruction = currentInstruction, onExit = { isNightPanel = false })
+        NightPanelScreen(
+            speed = finalSpeed,
+            instruction = currentInstruction,
+            onExit = { isNightPanel = false })
     } else {
         Column(modifier = Modifier.fillMaxSize()) {
+            // --- INSTRUMENT CLUSTER (BUDÍKY) ---
             InstrumentCluster(
                 modifier = Modifier.weight(0.25f),
-                instruction = currentInstruction,
-                speed = currentSpeed,
-                battery = batteryLevel,
-                isDemoMode = isDemoMode,
+                carState = carState.copy(speed = finalSpeed),
                 gpsStatus = gpsStatus,
-                onDemoToggle = { isDemoMode = !isDemoMode }
+                batteryLevel = batteryLevel,
+                instruction = currentInstruction
             )
+
+            // --- HLAVNÍ PLOCHA (MAPA / KAMERA) ---
             Box(modifier = Modifier.weight(0.60f).fillMaxWidth().background(Color.Black)) {
                 if (currentGear == "R") {
                     ReverseCameraScreen()
@@ -211,15 +215,21 @@ fun TeslaLayout() {
                 } else {
                     Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = false, onInstructionUpdated = { newInstruction -> currentInstruction = newInstruction })
                 }
-                GearSelector(currentGear = currentGear, onGearSelected = { gear -> tryShiftTo(gear) }, modifier = Modifier.align(Alignment.CenterEnd))
+                GearSelector(
+                    currentGear = currentGear,
+                    onGearSelected = { gear -> tryShiftTo(gear) },
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                )
             }
-            Dock(modifier = Modifier.weight(0.15f), isNightPanel = false, onNightPanelToggle = { isNightPanel = !isNightPanel })
+            // --- SPODNÍ LIŠTA ---
+            Dock(
+                modifier = Modifier.weight(0.15f),
+                isNightPanel = false,
+                onNightPanelToggle = { isNightPanel = !isNightPanel })
         }
     }
 }
 
-// ... (Zbytek funkcí Viewport, TeslaMap atd. je stejný, zkopírujte ho z předchozí verze nebo si ho tam nechte) ...
-// Pro úplnost vložím zbytek funkcí pod Viewport dolů, aby to bylo kompletní:
 
 @Composable
 fun Viewport(modifier: Modifier = Modifier, isNightPanel: Boolean = false, onInstructionUpdated: (NavInstruction?) -> Unit) {
@@ -240,7 +250,11 @@ fun Viewport(modifier: Modifier = Modifier, isNightPanel: Boolean = false, onIns
         mapViewportState.flyTo(CameraOptions.Builder().center(currentCamera?.center).zoom(targetZoom).pitch(targetPitch).bearing(currentCamera?.bearing).build(), MapAnimationOptions.Builder().duration(1500).build())
     }
     LaunchedEffect(searchQuery) {
-        if (searchQuery.length > 2) { delay(500); fetchSuggestions(searchQuery, context) { results -> suggestions = results } } else suggestions = emptyList()
+        if (searchQuery.length > 2) { delay(500); fetchSuggestions(
+            searchQuery,
+            context
+        ) { results -> suggestions = results }
+        } else suggestions = emptyList()
     }
     fun performSearchAndRoute(query: String) {
         focusManager.clearFocus()
@@ -249,14 +263,32 @@ fun Viewport(modifier: Modifier = Modifier, isNightPanel: Boolean = false, onIns
                 val targetPoint = if (suggestions.isNotEmpty()) suggestions.first().point else {
                     var foundPoint: Point? = null
                     val latch = java.util.concurrent.CountDownLatch(1)
-                    fetchSuggestions(query, context) { results -> if (results.isNotEmpty()) foundPoint = results.first().point; latch.countDown() }
+                    fetchSuggestions(
+                        query,
+                        context
+                    ) { results ->
+                        if (results.isNotEmpty()) foundPoint =
+                            results.first().point; latch.countDown()
+                    }
                     latch.await()
                     foundPoint
                 }
                 if (targetPoint != null) {
                     val currentPoint = mapViewportState.cameraState?.center ?: Point.fromLngLat(14.4378, 50.0755)
-                    fetchRouteManual(currentPoint, targetPoint, context) { newGeoJson, instruction ->
-                        scope.launch(Dispatchers.Main) { routeGeoJson = newGeoJson; onInstructionUpdated(instruction); isSearchVisible = false; is3dMode = true; Toast.makeText(context, "Výpočet trasy...", Toast.LENGTH_SHORT).show() }
+                    fetchRouteManual(
+                        currentPoint,
+                        targetPoint,
+                        context
+                    ) { newGeoJson, instruction ->
+                        scope.launch(Dispatchers.Main) {
+                            routeGeoJson =
+                                newGeoJson; onInstructionUpdated(instruction); isSearchVisible =
+                            false; is3dMode = true; Toast.makeText(
+                            context,
+                            "Výpočet trasy...",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        }
                     }
                 }
             }
@@ -302,5 +334,7 @@ fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.ex
     }
 }
 fun getBatteryLevel(context: Context): Int { val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager; return batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) }
-fun fetchRouteFromPoints(origin: Point, destination: Point, context: Context, onRouteFound: (String) -> Unit) { fetchRouteManual(origin, destination, context) { json, _ -> onRouteFound(json) } }
+fun fetchRouteFromPoints(origin: Point, destination: Point, context: Context, onRouteFound: (String) -> Unit) {
+    fetchRouteManual(origin, destination, context) { json, _ -> onRouteFound(json) }
+}
 @Preview(showBackground = true, device = "spec:width=1080px,height=2340px,dpi=440") @Composable fun TeslaLayoutPreview() { TeslaLauncherTheme { TeslaLayout() } }
