@@ -59,7 +59,7 @@ object ObdDataManager {
                             fuelLevel = parsePercentFloat(fuelStr),
                             batteryVoltage = parseVoltage(voltStr)
                         )}
-                        delay(50) // Malá pauza
+                        delay(150) // Malá pauza
                     }
 
                 } catch (e: Exception) {

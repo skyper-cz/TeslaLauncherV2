@@ -44,7 +44,7 @@ fun sendMediaKeyEvent(context: Context, keyCode: Int) {
     audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
 }
 
-// --- 1. INSTRUMENT CLUSTER (Optimalizovaný - rozdělený na části) ---
+// --- 1. INSTRUMENT CLUSTER (Optimalizovaný) ---
 @Composable
 fun InstrumentCluster(
     modifier: Modifier = Modifier,
@@ -53,15 +53,13 @@ fun InstrumentCluster(
     batteryLevel: Int,
     instruction: NavInstruction?
 ) {
-    // Hlavní kontejner - překreslí se jen při změně rozměrů
     Box(
         modifier = modifier
             .fillMaxWidth()
             .background(Color.Black)
             .padding(16.dp)
     ) {
-        // A. Horní lišta (Statusy, Navigace, RPM)
-        // Posíláme jen konkrétní parametry, aby se nepřekreslovalo vše
+        // A. Horní lišta (Statusy, Navigace, RPM) - Flexibilní
         TopStatusSection(
             modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
             gpsStatus = gpsStatus,
@@ -81,7 +79,7 @@ fun InstrumentCluster(
     }
 }
 
-// --- PODKOMPONENTA: Horní Lišta (Statusy + RPM + Navigace) ---
+// --- PODKOMPONENTA: Horní Lišta (Opravená pro P Smart) ---
 @Composable
 fun TopStatusSection(
     modifier: Modifier,
@@ -93,9 +91,13 @@ fun TopStatusSection(
     batteryLevel: Int,
     instruction: NavInstruction?
 ) {
-    Box(modifier = modifier) {
+    Row(
+        modifier = modifier.padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Top
+    ) {
         // 1. LEVÁ STRANA
-        Row(modifier = Modifier.align(Alignment.TopStart), verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.wrapContentWidth()) {
             if (gpsStatus != null) {
                 Text(
                     text = gpsStatus,
@@ -103,38 +105,39 @@ fun TopStatusSection(
                     modifier = Modifier.background(if (gpsStatus == "SEARCHING...") Color.Red else Color.DarkGray, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp),
                     fontSize = 12.sp, fontWeight = FontWeight.Bold
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.width(4.dp))
             }
-            if (isConnected) Icon(Icons.Default.BluetoothConnected, "OBD", tint = Color.Green, modifier = Modifier.size(24.dp))
+            if (isConnected) Icon(Icons.Default.BluetoothConnected, "OBD", tint = Color.Green, modifier = Modifier.size(20.dp))
             else if (isDemoMode) Text("DEMO", color = Color.Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
 
         // 2. STŘED (Navigace + RPM)
-        Column(modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(0.6f), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(
+            modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             if (instruction != null) {
                 NavigationDisplay(instruction)
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(4.dp))
             } else {
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(20.dp))
             }
-            // RPM Lišta (vyčleněná, aby neblikala celá obrazovka)
             RpmBar(rpm = rpm)
         }
 
         // 3. PRAVÁ STRANA
-        Row(modifier = Modifier.align(Alignment.TopEnd), verticalAlignment = Alignment.CenterVertically) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.wrapContentWidth()) {
             if (coolantTemp > 0) {
                 Text(text = "$coolantTemp°C", color = if (coolantTemp >= 105) Color.Red else Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.width(16.dp))
+                Spacer(modifier = Modifier.width(8.dp))
             }
             Text(text = "$batteryLevel%", color = if (batteryLevel < 20) Color.Red else Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.width(4.dp))
-            Icon(if (batteryLevel > 20) Icons.Default.BatteryFull else Icons.Default.BatteryAlert, "Bat", tint = if (batteryLevel < 20) Color.Red else Color.Green, modifier = Modifier.size(24.dp))
+            Icon(if (batteryLevel > 20) Icons.Default.BatteryFull else Icons.Default.BatteryAlert, "Bat", tint = if (batteryLevel < 20) Color.Red else Color.Green, modifier = Modifier.size(20.dp))
         }
     }
 }
 
-// --- PODKOMPONENTA: Navigace ---
 @Composable
 fun NavigationDisplay(instruction: NavInstruction) {
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -150,45 +153,28 @@ fun NavigationDisplay(instruction: NavInstruction) {
     Text(text = instruction.text, color = Color.White, fontSize = 16.sp, maxLines = 1, fontWeight = FontWeight.Medium)
 }
 
-// --- PODKOMPONENTA: RPM Lišta (Kreslí se jen při změně RPM) ---
 @Composable
 fun RpmBar(rpm: Int) {
     if (rpm > 0) {
         val isRedline = rpm >= 5500
         val progress = (rpm / 7000f).coerceIn(0f, 1f)
-
         Canvas(modifier = Modifier.fillMaxWidth().height(6.dp)) {
             drawRect(color = Color.DarkGray, size = size)
             val barWidth = size.width * progress
             val barColor = if (isRedline) Color.Red else Color.White
-
-            drawRect(
-                color = barColor,
-                topLeft = Offset((size.width - barWidth) / 2, 0f),
-                size = size.copy(width = barWidth)
-            )
+            drawRect(color = barColor, topLeft = Offset((size.width - barWidth) / 2, 0f), size = size.copy(width = barWidth))
         }
         Text(text = "$rpm", color = if (isRedline) Color.Red else Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
     }
 }
 
-// --- PODKOMPONENTA: Rychloměr ---
 @Composable
 fun SpeedometerSection(modifier: Modifier, speed: Int) {
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = "$speed",
-            fontSize = 110.sp,
-            fontWeight = FontWeight.Bold,
-            color = Color.White,
-            letterSpacing = (-4).sp
-        )
+        Text(text = "$speed", fontSize = 110.sp, fontWeight = FontWeight.Bold, color = Color.White, letterSpacing = (-4).sp)
         Text(text = "KM/H", fontSize = 16.sp, color = Color.Gray, fontWeight = FontWeight.SemiBold)
     }
 }
-
-// --- ZBYTEK KÓDU ZŮSTÁVÁ BEZ ZMĚN (NightPanel, Dock, GearSelector...) ---
-// (Zkopíruj sem zbytek souboru, který už jsi měl, ten je v pořádku)
 
 @Composable
 fun NightPanelScreen(speed: Int, instruction: NavInstruction?, onExit: () -> Unit) {
@@ -197,6 +183,7 @@ fun NightPanelScreen(speed: Int, instruction: NavInstruction?, onExit: () -> Uni
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             if (instruction != null) {
                 Text(text = formatDistance(instruction.distance), color = Color.Cyan, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+                Icon(if (instruction.modifier?.contains("left") == true) Icons.AutoMirrored.Filled.ArrowBack else Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.Cyan, modifier = Modifier.size(64.dp))
             }
             Text(text = "$animatedSpeed", color = Color(0xFFE0E0E0), fontSize = 140.sp, fontWeight = FontWeight.ExtraBold)
             Text(text = "km/h", color = Color.DarkGray, fontSize = 24.sp)
@@ -208,19 +195,22 @@ fun NightPanelScreen(speed: Int, instruction: NavInstruction?, onExit: () -> Uni
 fun WideMusicPlayer(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
-    Row(modifier = modifier.fillMaxHeight().background(Color(0xFF1A1A1A), shape = RoundedCornerShape(16.dp)).padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(modifier = Modifier.aspectRatio(1f).fillMaxHeight().background(Color.DarkGray, shape = RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
-            Icon(Icons.Default.MusicNote, null, tint = Color.Gray, modifier = Modifier.size(32.dp))
+    Row(
+        modifier = modifier.fillMaxHeight().background(Color(0xFF1A1A1A), shape = RoundedCornerShape(16.dp)).padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(modifier = Modifier.aspectRatio(1f).fillMaxHeight().background(Color.DarkGray, shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.MusicNote, null, tint = Color.Gray, modifier = Modifier.size(24.dp))
         }
-        Spacer(modifier = Modifier.width(16.dp))
+        Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-            Text("Bluetooth Audio", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp, maxLines = 1)
-            Text("Tap to play", color = Color.Gray, fontSize = 14.sp, maxLines = 1)
+            Text("Bluetooth Audio", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1)
+            Text("Tap to play", color = Color.Gray, fontSize = 12.sp, maxLines = 1)
         }
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            IconButton(onClick = { sendMediaKeyEvent(context, KeyEvent.KEYCODE_MEDIA_PREVIOUS) }, modifier = Modifier.size(56.dp)) { Icon(Icons.Default.SkipPrevious, "Prev", tint = Color.White, modifier = Modifier.size(40.dp)) }
-            IconButton(onClick = { isPlaying = !isPlaying; sendMediaKeyEvent(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }, modifier = Modifier.size(64.dp)) { Icon(if (isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle, "Play", tint = Color.Cyan, modifier = Modifier.fillMaxSize()) }
-            IconButton(onClick = { sendMediaKeyEvent(context, KeyEvent.KEYCODE_MEDIA_NEXT) }, modifier = Modifier.size(56.dp)) { Icon(Icons.Default.SkipNext, "Next", tint = Color.White, modifier = Modifier.size(40.dp)) }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(onClick = { sendMediaKeyEvent(context, KeyEvent.KEYCODE_MEDIA_PREVIOUS) }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.SkipPrevious, "Prev", tint = Color.White, modifier = Modifier.size(28.dp)) }
+            IconButton(onClick = { isPlaying = !isPlaying; sendMediaKeyEvent(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }, modifier = Modifier.size(48.dp)) { Icon(if (isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle, "Play", tint = Color.Cyan, modifier = Modifier.fillMaxSize()) }
+            IconButton(onClick = { sendMediaKeyEvent(context, KeyEvent.KEYCODE_MEDIA_NEXT) }, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.SkipNext, "Next", tint = Color.White, modifier = Modifier.size(28.dp)) }
         }
     }
 }

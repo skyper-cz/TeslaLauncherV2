@@ -42,19 +42,25 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.StateFlow
+
+// IMPORTY TVÝCH BALÍČKŮ
 import com.launchers.teslalauncherv2.GUI.Dock
 import com.launchers.teslalauncherv2.GUI.GearSelector
 import com.launchers.teslalauncherv2.GUI.InstrumentCluster
 import com.launchers.teslalauncherv2.GUI.NightPanelScreen
 import com.launchers.teslalauncherv2.GUI.ReverseCameraScreen
+import com.launchers.teslalauncherv2.data.CarState
 import com.launchers.teslalauncherv2.data.NavInstruction
 import com.launchers.teslalauncherv2.data.ObdDataManager
 import com.launchers.teslalauncherv2.data.SearchSuggestion
 import com.launchers.teslalauncherv2.data.fetchRouteManual
 import com.launchers.teslalauncherv2.data.fetchSuggestions
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+
+// MAPBOX IMPORTY
 import com.mapbox.geojson.Point
 import com.mapbox.maps.CameraOptions
 import com.mapbox.maps.Style
@@ -78,8 +84,7 @@ import com.mapbox.maps.extension.style.expressions.generated.Expression.Companio
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.get
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.literal
 
-// !!! ZDE SI NASTAV SVOU MAC ADRESU OBD ADAPTÉRU !!!
-const val OBD_MAC_ADDRESS = "AA:BB:CC:11:22:33"
+const val OBD_MAC_ADDRESS = "00:10:CC:4F:36:03"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,10 +99,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Důležité: Když aplikaci zabiješ, odpojíme OBD
     override fun onDestroy() {
         super.onDestroy()
         ObdDataManager.stop()
+        // DŮLEŽITÉ: Zabijeme proces pro čistý restart (uvolní Bluetooth socket)
+        android.os.Process.killProcess(android.os.Process.myPid())
+        System.exit(0)
     }
 }
 
@@ -110,9 +117,7 @@ fun TeslaLauncherTheme(content: @Composable () -> Unit) {
 @Composable
 fun TeslaLayout() {
     val context = LocalContext.current
-
-    // --- STAVY ---
-    val carState by ObdDataManager.carState.collectAsState()
+    val carStateFlow = ObdDataManager.carState
 
     var currentInstruction by remember { mutableStateOf<NavInstruction?>(null) }
     var currentSpeedGps by remember { mutableIntStateOf(0) }
@@ -121,34 +126,21 @@ fun TeslaLayout() {
     var currentGear by rememberSaveable { mutableStateOf("P") }
     var gpsStatus by remember { mutableStateOf<String?>("INIT...") }
 
-    // Rychlost: Preferujeme OBD, pokud není, bereme GPS
-    val finalSpeed = if (carState.isConnected) carState.speed else currentSpeedGps
-
-    // --- OPRÁVNĚNÍ (GPS + KAMERA + BLUETOOTH) ---
-
-    // 1. GPS
+    // OPRÁVNĚNÍ
     val locationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
         onResult = { permissions ->
-            val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
             if (granted) gpsStatus = "STARTING..." else gpsStatus = "NO PERMISSION"
         }
     )
-
-    // 2. KAMERA (pro zpátečku)
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { isGranted -> if (isGranted) currentGear = "R" }
     )
-
-    // 3. BLUETOOTH (pro OBD) - Nové!
     val bluetoothPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
-        onResult = {
-            // Po udělení oprávnění se zkusíme připojit
-            ObdDataManager.connect(context, OBD_MAC_ADDRESS)
-        }
+        onResult = { ObdDataManager.connect(context, OBD_MAC_ADDRESS) }
     )
 
     fun tryShiftTo(gear: String) {
@@ -158,44 +150,20 @@ fun TeslaLayout() {
         } else currentGear = gear
     }
 
-    // --- START APLIKACE A PŘIPOJENÍ ---
+    // START
     LaunchedEffect(Unit) {
-        // A) Inicializace Bluetooth připojení
         if (Build.VERSION.SDK_INT >= 31) {
-            // Android 12 a novější potřebuje explicitní BLUETOOTH_CONNECT
-            val permissions = arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT
-            )
-            // Zkusíme rovnou požádat
-            bluetoothPermissionLauncher.launch(permissions)
+            bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
         } else {
-            // Starší Androidy mají BT v manifestu, připojujeme rovnou
             ObdDataManager.connect(context, OBD_MAC_ADDRESS)
         }
-
-        // B) Aktualizace baterie každou minutu
-        while (true) {
-            batteryLevel = getBatteryLevel(context)
-            delay(60000)
-        }
+        while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
 
-    // --- ÚKLID PŘI ZAVŘENÍ ---
-    // Toto zajistí, že když opustíš obrazovku (ale ne celou appku), spojení se ukončí
-    // Pokud chceš, aby to běželo na pozadí, tento blok vymaž a nech jen onDestroy v Activitě
-    DisposableEffect(Unit) {
-        onDispose {
-            ObdDataManager.stop()
-        }
-    }
-
-    // --- GPS LOGIKA ---
+    // GPS
     LaunchedEffect(gpsStatus) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val hasPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-
-        if (!hasPermission) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             gpsStatus = "WAITING..."
             locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
         } else {
@@ -205,81 +173,121 @@ fun TeslaLayout() {
                     override fun onLocationChanged(location: Location) {
                         gpsStatus = null
                         if (location.hasSpeed()) currentSpeedGps = (location.speed * 3.6f).toInt()
-
                         val instruction = currentInstruction
                         if (instruction?.maneuverPoint != null) {
                             val target = Location("T"); target.latitude = instruction.maneuverPoint.latitude(); target.longitude = instruction.maneuverPoint.longitude()
-                            val dist = location.distanceTo(target).toInt()
-                            if (dist < 30) currentInstruction = null else currentInstruction = instruction.copy(distance = dist)
+                            if (location.distanceTo(target) < 30) currentInstruction = null
+                            else currentInstruction = instruction.copy(distance = location.distanceTo(target).toInt())
                         }
                     }
                     override fun onProviderDisabled(p: String) {}
                     override fun onProviderEnabled(p: String) {}
                     override fun onStatusChanged(p: String?, s: Int, e: Bundle?) {}
                 }
-
-                val providers = locationManager.allProviders
-                if (providers.contains(LocationManager.GPS_PROVIDER)) {
-                    locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, listener)
-                }
-                if (providers.contains(LocationManager.NETWORK_PROVIDER)) {
-                    locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0L, 0f, listener)
-                }
-
-            } catch (e: Exception) {
-                gpsStatus = "GPS ERR"
-                e.printStackTrace()
-            }
+                if (locationManager.allProviders.contains(LocationManager.GPS_PROVIDER)) locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, listener)
+                if (locationManager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 0L, 0f, listener)
+            } catch (e: Exception) { gpsStatus = "GPS ERR"; e.printStackTrace() }
         }
     }
 
-    if (isNightPanel) {
-        NightPanelScreen(
-            speed = finalSpeed,
-            instruction = currentInstruction,
-            onExit = { isNightPanel = false })
-    } else {
+    val finalSpeed = if (carStateFlow.collectAsState().value.isConnected) carStateFlow.collectAsState().value.speed else currentSpeedGps
+
+    // --- LAYOUT ---
+    Box(modifier = Modifier.fillMaxSize()) {
+
+        // 1. HLAVNÍ VRSTVA (UI)
         Column(modifier = Modifier.fillMaxSize()) {
-            // --- INSTRUMENT CLUSTER ---
-            InstrumentCluster(
+
+            // A. Budíky (Izolované)
+            InstrumentClusterWrapper(
                 modifier = Modifier.weight(0.25f),
-                carState = carState.copy(speed = finalSpeed),
+                carStateFlow = carStateFlow,
                 gpsStatus = gpsStatus,
-                batteryLevel = batteryLevel,     // Posíláme baterii
-                instruction = currentInstruction // Posíláme navigaci
+                batteryLevel = batteryLevel,
+                instruction = currentInstruction,
+                gpsSpeed = currentSpeedGps
             )
 
-            // --- HLAVNÍ PLOCHA (MAPA / KAMERA) ---
+            // B. Střední část (MAPA + KAMERA)
             Box(modifier = Modifier.weight(0.60f).fillMaxWidth().background(Color.Black)) {
+                // 1. MAPA (Je zde TRVALE, aby se neresetovala)
+                Viewport(
+                    modifier = Modifier.fillMaxSize(),
+                    isNightPanel = isNightPanel,
+                    onInstructionUpdated = { newInstruction -> currentInstruction = newInstruction }
+                )
+
+                // 2. KAMERA (Překryv) - Zobrazí se PŘES mapu
                 if (currentGear == "R") {
-                    ReverseCameraScreen()
-                    Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
-                } else {
-                    Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = false, onInstructionUpdated = { newInstruction -> currentInstruction = newInstruction })
+                    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                        ReverseCameraScreen()
+                        Text(
+                            text = "REAR VIEW",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 16.dp)
+                                .background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 8.dp)
+                        )
+                    }
                 }
+
+                // 3. Volič převodovky
                 GearSelector(
                     currentGear = currentGear,
                     onGearSelected = { gear -> tryShiftTo(gear) },
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
-            // --- SPODNÍ LIŠTA ---
+
+            // C. Dock
             Dock(
                 modifier = Modifier.weight(0.15f),
-                isNightPanel = false,
-                onNightPanelToggle = { isNightPanel = !isNightPanel })
+                isNightPanel = isNightPanel,
+                onNightPanelToggle = { isNightPanel = !isNightPanel }
+            )
+        }
+
+        // 2. NIGHT PANEL PŘEKRYV
+        if (isNightPanel) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                NightPanelScreen(
+                    speed = finalSpeed,
+                    instruction = currentInstruction,
+                    onExit = { isNightPanel = false }
+                )
+            }
         }
     }
 }
 
-// ... (zbytek souboru s funkcemi Viewport, TeslaMap, atd. zůstává stejný) ...
-// Ujisti se, že jsi nezapomněl na getBatteryLevel a Viewport funkce na konci souboru
+// --- POMOCNÉ FUNKCE (Wrapper, Viewport, Map...) ---
+
+@Composable
+fun InstrumentClusterWrapper(
+    modifier: Modifier,
+    carStateFlow: StateFlow<CarState>,
+    gpsStatus: String?,
+    batteryLevel: Int,
+    instruction: NavInstruction?,
+    gpsSpeed: Int
+) {
+    val carState by carStateFlow.collectAsState()
+    val displaySpeed = if (carState.isConnected) carState.speed else gpsSpeed
+
+    InstrumentCluster(
+        modifier = modifier,
+        carState = carState.copy(speed = displaySpeed),
+        gpsStatus = gpsStatus,
+        batteryLevel = batteryLevel,
+        instruction = instruction
+    )
+}
+
 @Composable
 fun Viewport(modifier: Modifier = Modifier, isNightPanel: Boolean = false, onInstructionUpdated: (NavInstruction?) -> Unit) {
-    // ... tvůj kód viewportu ...
-    // (Zkopíruj sem tu velkou funkci Viewport z minula, pokud ji tu nemáš)
-    // Pro úsporu místa ji sem nedávám celou znovu, pokud ji už máš.
-    // Pokud ji nemáš, napiš, pošlu ji.
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val mapViewportState = rememberMapViewportState { setCameraOptions { center(Point.fromLngLat(14.4378, 50.0755)); zoom(11.0); pitch(0.0) } }
@@ -297,11 +305,7 @@ fun Viewport(modifier: Modifier = Modifier, isNightPanel: Boolean = false, onIns
         mapViewportState.flyTo(CameraOptions.Builder().center(currentCamera?.center).zoom(targetZoom).pitch(targetPitch).bearing(currentCamera?.bearing).build(), MapAnimationOptions.Builder().duration(1500).build())
     }
     LaunchedEffect(searchQuery) {
-        if (searchQuery.length > 2) { delay(500); fetchSuggestions(
-            searchQuery,
-            context
-        ) { results -> suggestions = results }
-        } else suggestions = emptyList()
+        if (searchQuery.length > 2) { delay(500); fetchSuggestions(searchQuery, context) { results -> suggestions = results } } else suggestions = emptyList()
     }
     fun performSearchAndRoute(query: String) {
         focusManager.clearFocus()
@@ -310,32 +314,14 @@ fun Viewport(modifier: Modifier = Modifier, isNightPanel: Boolean = false, onIns
                 val targetPoint = if (suggestions.isNotEmpty()) suggestions.first().point else {
                     var foundPoint: Point? = null
                     val latch = java.util.concurrent.CountDownLatch(1)
-                    fetchSuggestions(
-                        query,
-                        context
-                    ) { results ->
-                        if (results.isNotEmpty()) foundPoint =
-                            results.first().point; latch.countDown()
-                    }
+                    fetchSuggestions(query, context) { results -> if (results.isNotEmpty()) foundPoint = results.first().point; latch.countDown() }
                     latch.await()
                     foundPoint
                 }
                 if (targetPoint != null) {
                     val currentPoint = mapViewportState.cameraState?.center ?: Point.fromLngLat(14.4378, 50.0755)
-                    fetchRouteManual(
-                        currentPoint,
-                        targetPoint,
-                        context
-                    ) { newGeoJson, instruction ->
-                        scope.launch(Dispatchers.Main) {
-                            routeGeoJson =
-                                newGeoJson; onInstructionUpdated(instruction); isSearchVisible =
-                            false; is3dMode = true; Toast.makeText(
-                            context,
-                            "Výpočet trasy...",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                        }
+                    fetchRouteManual(currentPoint, targetPoint, context) { newGeoJson, instruction ->
+                        scope.launch(Dispatchers.Main) { routeGeoJson = newGeoJson; onInstructionUpdated(instruction); isSearchVisible = false; is3dMode = true; Toast.makeText(context, "Výpočet trasy...", Toast.LENGTH_SHORT).show() }
                     }
                 }
             }
