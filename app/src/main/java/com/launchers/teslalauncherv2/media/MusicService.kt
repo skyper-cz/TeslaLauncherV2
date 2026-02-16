@@ -1,78 +1,85 @@
 package com.launchers.teslalauncherv2.media
 
-import android.app.Notification
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.drawable.BitmapDrawable
-import android.graphics.drawable.Drawable
-import android.media.session.MediaSession
+import android.content.ComponentName
+import android.content.Context
+import android.media.MediaMetadata
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import android.util.Log
 
 class MusicService : NotificationListenerService() {
 
-    override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        processNotification(sbn)
-    }
+    private lateinit var mediaSessionManager: MediaSessionManager
+    private var currentController: MediaController? = null
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
-        // Pokud zmizí notifikace aktuálně hrající aplikace, vymažeme info
-        if (sbn?.packageName == MediaManager.currentTrack.value.packageName) {
-            MediaManager.clear()
-        }
-    }
+    override fun onCreate() {
+        super.onCreate()
+        mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
 
-    private fun processNotification(sbn: StatusBarNotification?) {
-        if (sbn == null) return
+        val component = ComponentName(this, MusicService::class.java)
 
-        val extras = sbn.notification.extras
-        val title = extras.getString(Notification.EXTRA_TITLE)
-        val text = extras.getString(Notification.EXTRA_TEXT) // Obvykle interpret
-
-        // Zkusíme vytáhnout MediaSession token (to je klíč k ovládání)
-        val token = extras.getParcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION)
-
-        if (token != null || isMusicApp(sbn.packageName)) {
-            // Zkusíme získat obal alba
-            var albumArt: Bitmap? = null
-            try {
-                val largeIcon = sbn.notification.getLargeIcon()
-                if (largeIcon != null) {
-                    // Načtení bitmapy z ikony (může vyžadovat kontext)
-                    albumArt = drawableToBitmap(largeIcon.loadDrawable(this))
-                } else {
-                    val bmp = extras.getParcelable<Bitmap>(Notification.EXTRA_PICTURE)
-                    if (bmp != null) albumArt = bmp
-                }
-            } catch (e: Exception) { Log.e("MusicService", "Error loading art: $e") }
-
-            // Aktualizujeme data
-            MediaManager.updateTrack(
-                title = title ?: "Unknown Title",
-                artist = text ?: "Unknown Artist",
-                albumArt = albumArt,
-                isPlaying = true, // Předpokládáme, že když je notifikace, tak to hraje (nebo je pauza)
-                packageName = sbn.packageName
-            )
-        }
-    }
-
-    private fun isMusicApp(pkg: String): Boolean {
-        return pkg.contains("spotify") || pkg.contains("music") || pkg.contains("youtube") || pkg.contains("audible")
-    }
-
-    // Pomocná funkce pro převod Drawable na Bitmap
-    private fun drawableToBitmap(drawable: Drawable?): Bitmap? {
-        if (drawable == null) return null
-        if (drawable is BitmapDrawable) return drawable.bitmap
-
+        // Zaregistrujeme se k odběru změn přehrávačů
         try {
-            val bitmap = Bitmap.createBitmap(drawable.intrinsicWidth.coerceAtLeast(1), drawable.intrinsicHeight.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            drawable.setBounds(0, 0, canvas.width, canvas.height)
-            drawable.draw(canvas)
-            return bitmap
-        } catch (e: Exception) { return null }
+            mediaSessionManager.addOnActiveSessionsChangedListener({ controllers ->
+                updateControllers(controllers)
+            }, component)
+
+            // Načteme ten aktuální hned po startu
+            updateControllers(mediaSessionManager.getActiveSessions(component))
+        } catch (e: SecurityException) {
+            // Aplikace ještě nemá oprávnění od uživatele
+        }
     }
+
+    private fun updateControllers(controllers: List<MediaController>?) {
+        if (controllers.isNullOrEmpty()) return
+
+        // Odpojíme se od starého přehrávače
+        currentController?.unregisterCallback(mediaControllerCallback)
+
+        // Najdeme ten, který právě hraje (případně vezmeme první dostupný)
+        currentController = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+            ?: controllers.firstOrNull()
+
+        currentController?.registerCallback(mediaControllerCallback)
+        updateCurrentTrack(currentController)
+    }
+
+    private val mediaControllerCallback = object : MediaController.Callback() {
+        override fun onMetadataChanged(metadata: MediaMetadata?) {
+            updateCurrentTrack(currentController)
+        }
+
+        override fun onPlaybackStateChanged(state: PlaybackState?) {
+            updateCurrentTrack(currentController)
+        }
+    }
+
+    private fun updateCurrentTrack(controller: MediaController?) {
+        if (controller == null) return
+        val metadata = controller.metadata
+        val state = controller.playbackState
+
+        val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "Neznámá skladba"
+        val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: "Neznámý interpret"
+
+        // Některé aplikace ukládají obal pod ALBUM_ART, jiné pod ART
+        val albumArt = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+            ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+
+        val isPlaying = state?.state == PlaybackState.STATE_PLAYING
+
+        MediaManager.updateTrack(title, artist, albumArt, isPlaying)
+    }
+
+    override fun onDestroy() {
+        currentController?.unregisterCallback(mediaControllerCallback)
+        super.onDestroy()
+    }
+
+    // Tyto dvě metody musí být implementované, ale necháme je prázdné
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {}
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {}
 }

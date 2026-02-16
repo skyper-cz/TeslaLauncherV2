@@ -1,3 +1,5 @@
+@file:Suppress("OPT_IN_USAGE", "DEPRECATION", "SpellCheckingInspection", "UNUSED_PARAMETER", "UNUSED_ANONYMOUS_PARAMETER")
+
 package com.launchers.teslalauncherv2
 
 import androidx.core.view.WindowCompat
@@ -46,7 +48,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 
-// IMPORTY PROJEKTU - AKTUALIZOVÁNO PRO NOVOU STRUKTURU SLOŽEK
+// IMPORTY PROJEKTU
 import com.launchers.teslalauncherv2.ui.Dock
 import com.launchers.teslalauncherv2.ui.GearSelector
 import com.launchers.teslalauncherv2.ui.InstrumentCluster
@@ -95,26 +97,32 @@ import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.Polyline
 
-const val OBD_MAC_ADDRESS = "00:10:CC:4F:36:03"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // TÍMTO SKRYJEME HORNÍ I SPODNÍ SYSTÉMOVOU LIŠTU (Immersive Mode)
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
-            controller.hide(WindowInsetsCompat.Type.systemBars())
-            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-
         enableEdgeToEdge()
+        hideSystemUI()
+
         setContent {
             TeslaLauncherTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     TeslaLayout()
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        hideSystemUI()
+    }
+
+    private fun hideSystemUI() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
     }
 
@@ -144,10 +152,23 @@ fun TeslaLayout() {
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var currentGpsLocation by remember { mutableStateOf<Location?>(null) }
 
+    // NAČTENÍ ULOŽENÝCH NASTAVENÍ Z PAMĚTI
+    val sharedPrefs = remember { context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE) }
+    var savedObdMacAddress by remember {
+        mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "00:10:CC:4F:36:03")
+    }
+
+    // 🌟 NOVÉ: Mapy se načítají z paměti
+    var currentMapEngine by remember {
+        mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX")
+    }
+    var currentSearchEngine by remember {
+        mutableStateOf(sharedPrefs.getString("search_engine", "MAPBOX") ?: "MAPBOX")
+    }
+
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
     var isSettingsOpen by rememberSaveable { mutableStateOf(false) }
-    var currentMapEngine by rememberSaveable { mutableStateOf("MAPBOX") }
-    var currentSearchEngine by rememberSaveable { mutableStateOf("MAPBOX") }
+    var isAppDrawerOpen by rememberSaveable { mutableStateOf(false) }
 
     var currentGear by rememberSaveable { mutableStateOf("P") }
     var lastManualShiftTime by remember { mutableLongStateOf(0L) }
@@ -188,14 +209,31 @@ fun TeslaLayout() {
         if (granted) { isLocationPermissionGranted = true; gpsStatus = "READY" } else { gpsStatus = "NO PERM" }
     })
 
-    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions(), onResult = { ObdDataManager.connect(context, OBD_MAC_ADDRESS) })
+    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions(), onResult = {
+        if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
+    })
+
+    // Sledování změny MAC adresy - automatický restart připojení!
+    LaunchedEffect(savedObdMacAddress) {
+        if (savedObdMacAddress.isNotBlank()) {
+            val hasPerm = if (Build.VERSION.SDK_INT >= 31) ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED else true
+            if (hasPerm) {
+                ObdDataManager.stop()
+                delay(500)
+                ObdDataManager.connect(context, savedObdMacAddress)
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) isLocationPermissionGranted = true
         else locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
 
-        if (Build.VERSION.SDK_INT >= 31) bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
-        else ObdDataManager.connect(context, OBD_MAC_ADDRESS)
+        if (Build.VERSION.SDK_INT >= 31) {
+            bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
+        } else {
+            if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
+        }
 
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
@@ -290,20 +328,42 @@ fun TeslaLayout() {
                 GearSelector(currentGear = currentGear, onGearSelected = { gear -> manualShiftTo(gear) }, modifier = Modifier.align(Alignment.CenterEnd))
             }
 
-            Dock(modifier = Modifier.weight(0.15f), isNightPanel = isNightPanel, onNightPanelToggle = { isNightPanel = !isNightPanel }, onOpenSettings = { isSettingsOpen = true })
+            Dock(
+                modifier = Modifier.weight(0.15f),
+                isNightPanel = isNightPanel,
+                onNightPanelToggle = { isNightPanel = !isNightPanel },
+                onOpenSettings = { isSettingsOpen = true },
+                onOpenApps = { isAppDrawerOpen = true }
+            )
         }
 
-        // TADY JE TA ZMĚNA! Přidali jsme currentLocation
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }
             SettingsScreen(
                 onClose = { isSettingsOpen = false },
                 currentMapEngine = currentMapEngine,
-                onMapEngineChange = { currentMapEngine = it },
+                onMapEngineChange = { newEngine ->
+                    currentMapEngine = newEngine
+                    sharedPrefs.edit().putString("map_engine", newEngine).apply() // 🌟 UKLÁDÁNÍ
+                },
                 currentSearchEngine = currentSearchEngine,
-                onSearchEngineChange = { currentSearchEngine = it },
-                currentLocation = currentGpsLocation
+                onSearchEngineChange = { newEngine ->
+                    currentSearchEngine = newEngine
+                    sharedPrefs.edit().putString("search_engine", newEngine).apply() // 🌟 UKLÁDÁNÍ
+                },
+                currentLocation = currentGpsLocation,
+                // PŘEDÁVÁNÍ A UKLÁDÁNÍ MAC ADRESY OBD
+                currentObdMac = savedObdMacAddress,
+                onObdMacChange = { newMac ->
+                    savedObdMacAddress = newMac
+                    sharedPrefs.edit().putString("obd_mac", newMac).apply()
+                }
             )
+        }
+
+        if (isAppDrawerOpen) {
+            BackHandler { isAppDrawerOpen = false }
+            com.launchers.teslalauncherv2.ui.AppDrawerScreen(onClose = { isAppDrawerOpen = false })
         }
 
         if (isNightPanel) {
