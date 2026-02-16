@@ -1,6 +1,6 @@
 # 🚗 TeslaLauncher V2
 
-[![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android)](#)
+[![Android](https://img.shields.io/badge/Android-10.0%2B-3DDC84?logo=android)](#)
 [![Version](https://img.shields.io/badge/Version-1.0.0-blue)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
