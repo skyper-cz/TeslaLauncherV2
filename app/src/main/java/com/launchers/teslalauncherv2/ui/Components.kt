@@ -71,7 +71,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 
 // ==========================================
-// 7. JETPACK COMPOSE: KLÁVESNICE & VSTUP
+// 7. JETPACK COMPOSE: KLÁVESNICE & VSTUP
 // Ovládání políček pro psaní a to, jak reaguje klávesnice (vyhledávací lišta)
 // ==========================================
 import androidx.compose.foundation.text.BasicTextField
@@ -114,6 +114,7 @@ import com.launchers.teslalauncherv2.data.MapContinent
 import com.launchers.teslalauncherv2.data.MapCountry
 import com.launchers.teslalauncherv2.data.NavInstruction
 import com.launchers.teslalauncherv2.data.OfflineRegionsDatabase
+import com.launchers.teslalauncherv2.data.createBoundingBoxAround
 import com.launchers.teslalauncherv2.map.OfflineMapManager
 import com.launchers.teslalauncherv2.media.MediaManager
 
@@ -133,15 +134,41 @@ fun sendMediaKeyEvent(context: Context, keyCode: Int) {
     audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
 }
 
+fun getRouteBoundingBox(routeGeoJson: String, bufferDegrees: Double = 0.05): com.mapbox.geojson.Geometry? {
+    try {
+        val lineString = com.mapbox.geojson.FeatureCollection.fromJson(routeGeoJson).features()?.firstOrNull()?.geometry() as? com.mapbox.geojson.LineString
+        val coords = lineString?.coordinates() ?: return null
+        if (coords.isEmpty()) return null
+
+        var minLat = coords[0].latitude()
+        var maxLat = coords[0].latitude()
+        var minLng = coords[0].longitude()
+        var maxLng = coords[0].longitude()
+
+        for (p in coords) {
+            if (p.latitude() < minLat) minLat = p.latitude()
+            if (p.latitude() > maxLat) maxLat = p.latitude()
+            if (p.longitude() < minLng) minLng = p.longitude()
+            if (p.longitude() > maxLng) maxLng = p.longitude()
+        }
+
+        return com.launchers.teslalauncherv2.data.createBBoxGeometry(
+            minLng - bufferDegrees, minLat - bufferDegrees,
+            maxLng + bufferDegrees, maxLat + bufferDegrees
+        )
+    } catch (e: Exception) {
+        return null
+    }
+}
+
 @Composable
-fun InstrumentCluster(modifier: Modifier = Modifier, carState: CarState, gpsStatus: String?, batteryLevel: Int, instruction: NavInstruction?, routeDuration: Int? = null) {
+fun InstrumentCluster(modifier: Modifier = Modifier, carState: CarState, gpsStatus: String?, batteryLevel: Int, instruction: NavInstruction?, routeDuration: Int? = null, onCancelRoute: () -> Unit = {}) {
     Column(modifier = modifier.fillMaxWidth().background(Color.Black).padding(16.dp)) {
         TopStatusBar(gpsStatus, carState.isConnected, carState.isDemoMode, batteryLevel)
         Spacer(modifier = Modifier.weight(1f))
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                // Posíláme čas dál do vykreslení navigace
-                if (instruction != null) NavigationDisplay(instruction, routeDuration)
+                if (instruction != null) NavigationDisplay(instruction, routeDuration, onCancelRoute)
                 Spacer(modifier = Modifier.height(16.dp))
                 RpmBar(rpm = carState.rpm)
             }
@@ -149,6 +176,56 @@ fun InstrumentCluster(modifier: Modifier = Modifier, carState: CarState, gpsStat
                 if (carState.coolantTemp > 0) Text(text = "${carState.coolantTemp}°C", color = Color.Gray, fontSize = 14.sp)
                 Text(text = "${carState.speed}", fontSize = 90.sp, fontWeight = FontWeight.Bold, color = Color.White, letterSpacing = (-2).sp)
                 Text(text = "KM/H", fontSize = 14.sp, color = Color.Gray, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+@Composable
+fun NavigationDisplay(instruction: NavInstruction, routeDurationSeconds: Int? = null, onCancelRoute: () -> Unit) {
+    Column(horizontalAlignment = Alignment.Start, modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val icon = when {
+                    instruction.modifier?.contains("left") == true -> Icons.AutoMirrored.Filled.ArrowBack
+                    instruction.modifier?.contains("right") == true -> Icons.AutoMirrored.Filled.ArrowForward
+                    else -> Icons.Default.Navigation
+                }
+                Icon(icon, "Nav", tint = Color.Cyan, modifier = Modifier.size(32.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = formatDistance(instruction.distance), color = Color.Cyan, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            }
+
+            IconButton(onClick = onCancelRoute, modifier = Modifier.background(Color(0xFF330000), RoundedCornerShape(50)).size(36.dp)) {
+                Icon(Icons.Default.Close, "Cancel Route", tint = Color.Red, modifier = Modifier.size(20.dp))
+            }
+        }
+
+        Text(text = instruction.text, color = Color.White, fontSize = 18.sp, maxLines = 2, fontWeight = FontWeight.Medium)
+
+        if (routeDurationSeconds != null && routeDurationSeconds > 0) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val etaCalendar = Calendar.getInstance()
+                etaCalendar.add(Calendar.SECOND, routeDurationSeconds)
+                val etaFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+                val arrivalTime = etaFormat.format(etaCalendar.time)
+
+                val minutes = routeDurationSeconds / 60
+                val h = minutes / 60
+                val m = minutes % 60
+                val durationText = if (h > 0) "${h}h ${m}m" else "$m min"
+
+                Icon(Icons.Default.Schedule, null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(text = arrivalTime, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "·", color = Color.Gray, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = durationText, color = Color.Green, fontSize = 16.sp, fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -188,20 +265,17 @@ fun NavigationDisplay(instruction: NavInstruction, routeDurationSeconds: Int? = 
         }
         Text(text = instruction.text, color = Color.White, fontSize = 18.sp, maxLines = 2, fontWeight = FontWeight.Medium)
 
-        // ZOBRAZENÍ ČASU PŘÍJEZDU A ZBÝVAJÍCÍ DOBY
         if (routeDurationSeconds != null && routeDurationSeconds > 0) {
             Spacer(modifier = Modifier.height(8.dp))
             Row(
                 modifier = Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Výpočet ETA (Kdy tam budeme)
                 val etaCalendar = Calendar.getInstance()
                 etaCalendar.add(Calendar.SECOND, routeDurationSeconds)
                 val etaFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
                 val arrivalTime = etaFormat.format(etaCalendar.time)
 
-                // Výpočet zbývajícího času
                 val minutes = routeDurationSeconds / 60
                 val h = minutes / 60
                 val m = minutes % 60
@@ -292,29 +366,38 @@ fun SettingsScreen(
     currentSearchEngine: String,
     onSearchEngineChange: (String) -> Unit,
     currentLocation: android.location.Location?,
-    // PŘIDÁNO: Parametry pro OBD2
     currentObdMac: String,
-    onObdMacChange: (String) -> Unit
+    onObdMacChange: (String) -> Unit,
+    currentRouteGeoJson: String? = null
 ) {
     val context = LocalContext.current
 
     var downloadMenuLevel by remember { mutableIntStateOf(0) }
-    var selectedContinent by remember { mutableStateOf<MapContinent?>(null) }
-    var selectedCountry by remember { mutableStateOf<MapCountry?>(null) }
+    var selectedContinent by remember { mutableStateOf<com.launchers.teslalauncherv2.data.MapContinent?>(null) }
+    var selectedCountry by remember { mutableStateOf<com.launchers.teslalauncherv2.data.MapCountry?>(null) }
 
     var downloadingRegionId by remember { mutableStateOf<String?>(null) }
     var downloadProgress by remember { mutableIntStateOf(0) }
-
     var currentLocationName by remember { mutableStateOf("Hledám GPS lokaci...") }
-
-    // ZDE SI PAMATUJEME TEXT ZADANÝ DO POLÍČKA PRO OBD
     var tempObdMac by remember { mutableStateOf(currentObdMac) }
+
+    val prefs = remember { context.getSharedPreferences("offline_maps_status", Context.MODE_PRIVATE) }
+
+    // Paměť pro ruční regiony a okolí
+    var downloadedRegions by remember {
+        mutableStateOf(prefs.getStringSet("downloaded_ids", emptySet()) ?: emptySet())
+    }
+
+    // 🌟 NOVÉ: Paměť pro dočasné trasy
+    var savedRoutes by remember {
+        mutableStateOf(prefs.getStringSet("saved_routes", emptySet()) ?: emptySet())
+    }
 
     LaunchedEffect(currentLocation) {
         if (currentLocation != null) {
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 try {
-                    val geocoder = android.location.Geocoder(context, Locale.getDefault())
+                    val geocoder = android.location.Geocoder(context, java.util.Locale.getDefault())
                     val addresses = geocoder.getFromLocation(currentLocation.latitude, currentLocation.longitude, 1)
                     if (!addresses.isNullOrEmpty()) {
                         currentLocationName = addresses[0].locality ?: addresses[0].adminArea ?: "Aktuální poloha"
@@ -357,16 +440,98 @@ fun SettingsScreen(
 
             if (downloadMenuLevel == 0) {
 
-                // 🌟 NOVÁ KARTA: NASTAVENÍ OBD2 ADAPTÉRU 🌟
+                // 🌟 OPRAVENÁ ČÁST PRO TRASU (S TLAČÍTKEM SMAZAT) 🌟
+                val currentSavedRouteEntry = savedRoutes.firstOrNull { it.startsWith("active_route|") }
+                val isRouteDownloaded = currentSavedRouteEntry != null
+
+                // Zobrazí se, pokud je trasa zadaná NYNÍ, nebo pokud nám v paměti visí nějaká trasa z minula
+                if (currentRouteGeoJson != null || isRouteDownloaded) {
+                    var isDownloadingRoute by remember { mutableStateOf(false) }
+                    var routeDownloadProgress by remember { mutableIntStateOf(0) }
+
+                    Row(modifier = Modifier.fillMaxWidth().background(if(isRouteDownloaded) Color(0xFF003300) else if(isDownloadingRoute) Color(0xFF003333) else Color(0xFF112233), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(if (isRouteDownloaded && currentRouteGeoJson == null) "📍 Uložená trasa (Z minula)" else "📍 Aktuální trasa", color = Color.Cyan, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+
+                            if (isDownloadingRoute) {
+                                LinearProgressIndicator(
+                                    progress = { routeDownloadProgress / 100f },
+                                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                                    color = Color.Cyan, trackColor = Color.DarkGray
+                                )
+                            } else if (isRouteDownloaded) {
+                                Text("Installed ✓ (Smaže se za 30 dní)", color = Color.Green, fontSize = 14.sp)
+                            } else {
+                                Text("Uložit dočasně (30 dní)", color = Color.Gray, fontSize = 14.sp)
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        if (isDownloadingRoute) {
+                            Text("$routeDownloadProgress %", color = Color.White, fontWeight = FontWeight.Bold)
+                        } else if (isRouteDownloaded) {
+                            // 🌟 TLAČÍTKO PRO RUČNÍ SMAZÁNÍ TRASY 🌟
+                            IconButton(
+                                onClick = {
+                                    try { com.launchers.teslalauncherv2.map.OfflineMapManager.deleteRegion("active_route") } catch (e: Exception) {}
+                                    val newSet = savedRoutes.toMutableSet().apply { remove(currentSavedRouteEntry) }
+                                    prefs.edit().putStringSet("saved_routes", newSet).apply()
+                                    savedRoutes = newSet
+                                    Toast.makeText(context, "Trasa smazána z paměti", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.background(Color(0xFF550000), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.Delete, "Delete Route", tint = Color.White) }
+                        } else if (currentRouteGeoJson != null) {
+                            // TLAČÍTKO PRO STAŽENÍ TRASY
+                            IconButton(
+                                onClick = {
+                                    val routeGeometry = getRouteBoundingBox(currentRouteGeoJson)
+                                    if (routeGeometry != null) {
+                                        isDownloadingRoute = true
+                                        routeDownloadProgress = 0
+                                        Toast.makeText(context, "Stahuji mapu trasy...", Toast.LENGTH_SHORT).show()
+
+                                        com.launchers.teslalauncherv2.map.OfflineMapManager.downloadRegion(
+                                            context = context,
+                                            regionId = "active_route", // Vždy se to uloží do jednoho slotu
+                                            geometry = routeGeometry,
+                                            onProgress = { routeDownloadProgress = it },
+                                            onComplete = {
+                                                isDownloadingRoute = false
+                                                val rPrefs = context.getSharedPreferences("offline_maps_status", Context.MODE_PRIVATE)
+                                                val routes = rPrefs.getStringSet("saved_routes", mutableSetOf()) ?: mutableSetOf()
+                                                val newSet = routes.toMutableSet().apply {
+                                                    removeIf { it.startsWith("active_route|") } // Smažeme starý záznam
+                                                    add("active_route|${System.currentTimeMillis()}")
+                                                }
+                                                rPrefs.edit().putStringSet("saved_routes", newSet).apply()
+                                                savedRoutes = newSet
+                                                Toast.makeText(context, "Trasa uložena offline!", Toast.LENGTH_LONG).show()
+                                            },
+                                            onError = {
+                                                isDownloadingRoute = false
+                                                Toast.makeText(context, "Chyba stahování trasy", Toast.LENGTH_SHORT).show()
+                                            }
+                                        )
+                                    }
+                                },
+                                modifier = Modifier.background(Color(0xFF005555), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.Download, "Download Route", tint = Color.White) }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider(color = Color.DarkGray)
+                }
+
                 Column {
                     Text("OBD2 Bluetooth Adapter (MAC Address)", color = Color.Gray, fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
                             value = tempObdMac,
-                            onValueChange = { tempObdMac = it.uppercase() }, // Převede rovnou na velká písmena
+                            onValueChange = { tempObdMac = it.uppercase() },
                             modifier = Modifier.weight(1f),
-                            textStyle = TextStyle(color = Color.White, fontSize = 16.sp, letterSpacing = 2.sp),
+                            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 16.sp),
                             singleLine = true,
                             label = { Text("např. 00:10:CC:4F:36:03", color = Color.DarkGray) },
                             colors = OutlinedTextFieldDefaults.colors(
@@ -388,7 +553,6 @@ fun SettingsScreen(
                     }
                 }
                 HorizontalDivider(color = Color.DarkGray)
-                // 🌟 KONEC NOVÉ KARTY 🌟
 
                 Column {
                     Text("Map Engine (Visuals)", color = Color.Gray, fontSize = 14.sp)
@@ -399,20 +563,12 @@ fun SettingsScreen(
                     }
                 }
                 HorizontalDivider(color = Color.DarkGray)
-                Column {
-                    Text("Search & Routing Provider", color = Color.Gray, fontSize = 14.sp)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(onClick = { onSearchEngineChange("MAPBOX") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentSearchEngine == "MAPBOX") Color.White else Color(0xFF333333), contentColor = if (currentSearchEngine == "MAPBOX") Color.Black else Color.White), modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) { Text("MAPBOX", fontWeight = FontWeight.Bold) }
-                        Button(onClick = { onSearchEngineChange("GOOGLE") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentSearchEngine == "GOOGLE") Color.White else Color(0xFF333333), contentColor = if (currentSearchEngine == "GOOGLE") Color.Black else Color.White), modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) { Text("GOOGLE", fontWeight = FontWeight.Bold) }
-                    }
-                }
-                HorizontalDivider(color = Color.DarkGray)
+
                 Column {
                     Text("Offline Regions", color = Color.Gray, fontSize = 14.sp)
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    if (downloadingRegionId != null) {
+                    if (downloadingRegionId != null && downloadingRegionId != "auto_region") {
                         Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF003333), RoundedCornerShape(8.dp)).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Downloading Region...", color = Color.Cyan, fontWeight = FontWeight.Bold)
@@ -424,23 +580,46 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.height(12.dp))
                     }
 
-                    Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF112233), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    val isAutoDownloaded = downloadedRegions.contains("auto_region")
+                    val isAutoDownloading = downloadingRegionId == "auto_region"
+
+                    Row(modifier = Modifier.fillMaxWidth().background(if (isAutoDownloaded) Color(0xFF003300) else Color(0xFF112233), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("📍 Smart Region: $currentLocationName", color = Color.Cyan, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                            Text("Automatický okruh ~100 km", color = Color.Gray, fontSize = 14.sp)
+                            Text(if (isAutoDownloaded) "Installed ✓" else "Automatický okruh ~100 km", color = if (isAutoDownloaded) Color.Green else Color.Gray, fontSize = 14.sp)
                         }
                         Spacer(modifier = Modifier.width(16.dp))
-                        if (currentLocation != null) {
+
+                        if (isAutoDownloading) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.Cyan, strokeWidth = 2.dp)
+                        } else if (isAutoDownloaded) {
+                            IconButton(
+                                onClick = {
+                                    com.launchers.teslalauncherv2.map.OfflineMapManager.deleteRegion("auto_region")
+                                    val newSet = downloadedRegions.toMutableSet().apply { remove("auto_region") }
+                                    prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                                    downloadedRegions = newSet
+                                    Toast.makeText(context, "Okolí smazáno", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.background(Color(0xFF550000), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.Delete, "Delete", tint = Color.White) }
+                        } else if (currentLocation != null) {
                             IconButton(
                                 onClick = {
                                     downloadingRegionId = "auto_region"
                                     downloadProgress = 0
                                     Toast.makeText(context, "Start: Okolí $currentLocationName", Toast.LENGTH_SHORT).show()
                                     val geo = com.launchers.teslalauncherv2.data.createBoundingBoxAround(currentLocation.latitude, currentLocation.longitude, 50.0)
-                                    OfflineMapManager.downloadRegion(
+                                    com.launchers.teslalauncherv2.map.OfflineMapManager.downloadRegion(
                                         context = context, regionId = "auto_region", geometry = geo,
                                         onProgress = { downloadProgress = it },
-                                        onComplete = { downloadingRegionId = null; Toast.makeText(context, "Hotovo!", Toast.LENGTH_LONG).show() },
+                                        onComplete = {
+                                            downloadingRegionId = null
+                                            val newSet = downloadedRegions.toMutableSet().apply { add("auto_region") }
+                                            prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                                            downloadedRegions = newSet
+                                            Toast.makeText(context, "Hotovo!", Toast.LENGTH_LONG).show()
+                                        },
                                         onError = { downloadingRegionId = null; Toast.makeText(context, "Chyba: $it", Toast.LENGTH_LONG).show() }
                                     )
                                 },
@@ -458,7 +637,7 @@ fun SettingsScreen(
                 }
             }
             else if (downloadMenuLevel == 1) {
-                OfflineRegionsDatabase.continents.forEach { continent ->
+                com.launchers.teslalauncherv2.data.OfflineRegionsDatabase.continents.forEach { continent ->
                     Button(onClick = { selectedContinent = continent; downloadMenuLevel = 2 }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A)), modifier = Modifier.fillMaxWidth().height(60.dp), shape = RoundedCornerShape(12.dp)) {
                         Text(continent.name, color = Color.White, fontSize = 18.sp, modifier = Modifier.weight(1f))
                         Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.Gray)
@@ -475,21 +654,44 @@ fun SettingsScreen(
             }
             else if (downloadMenuLevel == 3) {
                 selectedCountry?.regions?.forEach { region ->
+
+                    val isDownloaded = downloadedRegions.contains(region.id)
                     val isThisDownloading = downloadingRegionId == region.id
-                    Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+
+                    Row(modifier = Modifier.fillMaxWidth().background(if (isDownloaded) Color(0xFF003300) else Color(0xFF2A2A2A), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(region.name, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                            Text(region.sizeMb, color = Color.Gray, fontSize = 14.sp)
+                            Text(if (isDownloaded) "Installed ✓" else region.sizeMb, color = if (isDownloaded) Color.Green else Color.Gray, fontSize = 14.sp)
                         }
-                        if (!isThisDownloading) {
+
+                        if (isThisDownloading) {
+                            CircularProgressIndicator(color = Color.Cyan, modifier = Modifier.size(24.dp))
+                        } else if (isDownloaded) {
+                            IconButton(
+                                onClick = {
+                                    com.launchers.teslalauncherv2.map.OfflineMapManager.deleteRegion(region.id)
+                                    val newSet = downloadedRegions.toMutableSet().apply { remove(region.id) }
+                                    prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                                    downloadedRegions = newSet
+                                    Toast.makeText(context, "Smazáno", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.background(Color(0xFF550000), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.Delete, "Delete", tint = Color.White) }
+                        } else {
                             IconButton(
                                 onClick = {
                                     downloadingRegionId = region.id
                                     downloadProgress = 0
-                                    OfflineMapManager.downloadRegion(
+                                    com.launchers.teslalauncherv2.map.OfflineMapManager.downloadRegion(
                                         context = context, regionId = region.id, geometry = region.geometry,
                                         onProgress = { downloadProgress = it },
-                                        onComplete = { downloadingRegionId = null; Toast.makeText(context, "Hotovo!", Toast.LENGTH_LONG).show() },
+                                        onComplete = {
+                                            downloadingRegionId = null
+                                            val newSet = downloadedRegions.toMutableSet().apply { add(region.id) }
+                                            prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                                            downloadedRegions = newSet
+                                            Toast.makeText(context, "Staženo a připraveno!", Toast.LENGTH_LONG).show()
+                                        },
                                         onError = { downloadingRegionId = null; Toast.makeText(context, "Chyba: $it", Toast.LENGTH_LONG).show() }
                                     )
                                 },
@@ -514,13 +716,11 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
         mutableStateOf(NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName))
     }
 
-    // 🌟 NOVÝ STAV: Zobrazuje se právě jméno interpreta?
     var showArtist by remember { mutableStateOf(false) }
 
-    // 🌟 AUTOMATICKÉ SKRYTÍ: Po 4 vteřinách se text vrátí zpět na název písničky
     LaunchedEffect(showArtist) {
         if (showArtist) {
-            delay(4000) // Počká 4 sekundy
+            delay(4000)
             showArtist = false
         }
     }
@@ -541,7 +741,6 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // VLEVO: Náhledovka alba (slouží i jako tlačítko pro povolení práv)
         Box(
             modifier = Modifier
                 .aspectRatio(1f)
@@ -567,16 +766,14 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.width(16.dp))
 
-        // VPRAVO: Text a OBŘÍ tlačítka
         Column(
             modifier = Modifier.weight(1f).fillMaxHeight(),
-            verticalArrangement = Arrangement.SpaceEvenly, // Dokonale to rozloží do výšky
+            verticalArrangement = Arrangement.SpaceEvenly,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             val displayTitle = if (hasPermission) trackInfo.title else "Chybí práva (Klikni na foto)"
             val displayArtist = if (hasPermission) trackInfo.artist else "Pro čtení ze Spotify"
 
-            // 🌟 OBLAST PRO TEXT S PROLÍNACÍ ANIMACÍ 🌟
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -589,7 +786,6 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
                 Crossfade(targetState = showArtist, label = "ArtistToggle") { isShowingArtist ->
                     key(marqueeTrigger) {
                         if (isShowingArtist) {
-                            // ZOBRAZENÍ INTERPRETA (Azurová barva pro odlišení)
                             Text(
                                 text = displayArtist,
                                 color = Color.Cyan,
@@ -599,7 +795,6 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
                                 modifier = Modifier.basicMarquee(iterations = 1, initialDelayMillis = 300)
                             )
                         } else {
-                            // ZOBRAZENÍ NÁZVU SKLADBY (Klasická bílá)
                             Text(
                                 text = displayTitle,
                                 color = Color.White,
@@ -613,7 +808,6 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
                 }
             }
 
-            // 🌟 ZVĚTŠENÁ OVLÁDACÍ TLAČÍTKA 🌟
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
@@ -624,7 +818,6 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
                 }
                 Spacer(modifier = Modifier.width(32.dp))
 
-                // Play/Pause je hlavní, proto je úplně největší (64 dp)
                 IconButton(onClick = { sendMediaKeyEvent(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }, modifier = Modifier.size(64.dp)) {
                     Icon(if (trackInfo.isPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle, "Play", tint = Color.Cyan, modifier = Modifier.fillMaxSize())
                 }
@@ -659,12 +852,10 @@ fun Dock(
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Hudební přehrávač vlevo (zabírá maximum místa)
         Box(modifier = Modifier.weight(1f)) {
             WideMusicPlayer(modifier = Modifier.fillMaxWidth())
         }
 
-        // Hlavní Menu Tlačítko vpravo
         Box {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -675,7 +866,6 @@ fun Dock(
                 Text("Menu", color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
 
-            // Vyskakovací bublina s nabídkou
             if (showAppsMenu) {
                 Popup(alignment = Alignment.TopEnd, onDismissRequest = { showAppsMenu = false }, offset = IntOffset(0, -320)) {
                     Column(
@@ -687,19 +877,16 @@ fun Dock(
                     ) {
                         Text("SYSTEM CONTROLS", color = Color.Gray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
 
-                        // Položka 1: Seznam všech aplikací v tabletu
                         AppMenuItem(Icons.Default.Apps, "All Apps", false) {
                             onOpenApps()
                             showAppsMenu = false
                         }
 
-                        // Položka 2: Naše nastavení
                         AppMenuItem(Icons.Default.Settings, "Settings", false) {
                             onOpenSettings()
                             showAppsMenu = false
                         }
 
-                        // Položka 3: Zhasnutí displeje
                         AppMenuItem(Icons.Default.NightsStay, "Night Panel", isNightPanel) {
                             onNightPanelToggle()
                             showAppsMenu = false
@@ -717,7 +904,6 @@ fun Dock(
     }
 }
 
-// Pomocná komponenta pro řádky v Menu
 @Composable
 fun AppMenuItem(icon: ImageVector, label: String, isActive: Boolean = false, onClick: () -> Unit = {}) {
     Row(
@@ -750,19 +936,18 @@ fun GearSelector(currentGear: String, onGearSelected: (String) -> Unit, modifier
 @Composable
 fun AppDrawerScreen(onClose: () -> Unit) {
     val context = LocalContext.current
-    var apps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
+    val allApps = remember { AppManager.getApps() }
+    var searchQuery by remember { mutableStateOf("") }
 
-    // Načte aplikace hned po otevření menu
-    LaunchedEffect(Unit) {
-        apps = AppManager.getInstalledApps(context)
-        isLoading = false
+    val displayedApps = if (searchQuery.isBlank()) {
+        allApps
+    } else {
+        allApps.filter { it.label.contains(searchQuery, ignoreCase = true) }
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.95f)).clickable(enabled = false) {}) {
         Column(modifier = Modifier.fillMaxSize().padding(top = 48.dp, start = 24.dp, end = 24.dp)) {
 
-            // Hlavička s tlačítkem ZAVŘÍT
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("APPLICATIONS", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
                 IconButton(onClick = onClose, modifier = Modifier.background(Color(0xFF333333), RoundedCornerShape(50))) {
@@ -770,39 +955,50 @@ fun AppDrawerScreen(onClose: () -> Unit) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            if (isLoading) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("Search apps...", color = Color.Gray) },
+                singleLine = true,
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = Color.Gray) },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Clear, contentDescription = "Clear", tint = Color.Gray) }
+                    }
+                },
+                textStyle = TextStyle(color = Color.White, fontSize = 16.sp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color.Cyan,
+                    unfocusedBorderColor = Color.DarkGray
+                ),
+                shape = RoundedCornerShape(12.dp)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            if (allApps.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = Color.Cyan)
                 }
             } else {
-                // Mřížka s aplikacemi (4 sloupce)
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(4),
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(4),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 100.dp)
                 ) {
-                    items(apps) { app ->
+                    items(displayedApps) { app ->
                         Column(
                             modifier = Modifier.padding(16.dp).clickable {
                                 try { context.startActivity(app.intent) } catch (e: Exception) { Toast.makeText(context, "Nelze spustit", Toast.LENGTH_SHORT).show() }
                             },
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Image(
-                                bitmap = app.icon,
-                                contentDescription = app.label,
-                                modifier = Modifier.size(64.dp)
-                            )
+                            Image(bitmap = app.icon, contentDescription = app.label, modifier = Modifier.size(64.dp))
                             Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = app.label,
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
+                            Text(text = app.label, color = Color.White, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }

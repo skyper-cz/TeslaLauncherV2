@@ -85,4 +85,12 @@ object OfflineMapManager {
             }
         }
     }
+
+    // Přidej tuto funkci do objektu OfflineMapManager
+    fun deleteRegion(regionId: String) {
+        // Zde záleží na tvé verzi Mapboxu, obvykle to vypadá nějak takto:
+        // TileStore.create().remove(regionId)
+        // nebo
+        // OfflineManager().removeOfflineRegion(regionId)
+    }
 }

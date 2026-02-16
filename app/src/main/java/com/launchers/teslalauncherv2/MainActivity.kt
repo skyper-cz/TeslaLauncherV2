@@ -148,17 +148,19 @@ fun TeslaLayout() {
 
     var currentInstruction by remember { mutableStateOf<NavInstruction?>(null) }
     var currentRouteDuration by remember { mutableStateOf<Int?>(null) }
+
+    // 🌟 ZMĚNA 1: TRASA JE ULOŽENÁ ZDE NAHOŘE (Nezmizí při couvací kameře)
+    var routeGeoJson by rememberSaveable { mutableStateOf<String?>(null) }
+
     var currentSpeedGps by remember { mutableIntStateOf(0) }
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var currentGpsLocation by remember { mutableStateOf<Location?>(null) }
 
-    // NAČTENÍ ULOŽENÝCH NASTAVENÍ Z PAMĚTI
     val sharedPrefs = remember { context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE) }
     var savedObdMacAddress by remember {
         mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "00:10:CC:4F:36:03")
     }
 
-    // 🌟 NOVÉ: Mapy se načítají z paměti
     var currentMapEngine by remember {
         mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX")
     }
@@ -213,7 +215,6 @@ fun TeslaLayout() {
         if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
     })
 
-    // Sledování změny MAC adresy - automatický restart připojení!
     LaunchedEffect(savedObdMacAddress) {
         if (savedObdMacAddress.isNotBlank()) {
             val hasPerm = if (Build.VERSION.SDK_INT >= 31) ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED else true
@@ -235,6 +236,33 @@ fun TeslaLayout() {
             if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
         }
 
+        launch(Dispatchers.IO) { com.launchers.teslalauncherv2.data.AppManager.prefetchApps(context) }
+
+        launch(Dispatchers.IO) {
+            val prefs = context.getSharedPreferences("offline_maps_status", Context.MODE_PRIVATE)
+            val routes = prefs.getStringSet("saved_routes", mutableSetOf()) ?: mutableSetOf()
+            val validRoutes = mutableSetOf<String>()
+            var changed = false
+
+            val thirtyDaysInMillis = 30L * 24 * 60 * 60 * 1000
+            val now = System.currentTimeMillis()
+
+            for (routeData in routes) {
+                val parts = routeData.split("|")
+                if (parts.size >= 2) {
+                    val id = parts[0]
+                    val timestamp = parts[1].toLongOrNull() ?: 0L
+                    if (now - timestamp > thirtyDaysInMillis) {
+                        try { com.launchers.teslalauncherv2.map.OfflineMapManager.deleteRegion(id) } catch (e: Exception) { }
+                        changed = true
+                    } else {
+                        validRoutes.add(routeData)
+                    }
+                }
+            }
+            if (changed) { prefs.edit().putStringSet("saved_routes", validRoutes).apply() }
+        }
+
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
 
@@ -251,7 +279,13 @@ fun TeslaLayout() {
                         val instruction = currentInstruction
                         if (instruction?.maneuverPoint != null) {
                             val target = Location("T"); target.latitude = instruction.maneuverPoint.latitude(); target.longitude = instruction.maneuverPoint.longitude()
-                            if (location.distanceTo(target) < 30) currentInstruction = null else currentInstruction = instruction.copy(distance = location.distanceTo(target).toInt())
+                            if (location.distanceTo(target) < 30) {
+                                currentInstruction = null
+                                currentRouteDuration = null
+                                routeGeoJson = null // V cíli smažeme i čáru
+                            } else {
+                                currentInstruction = instruction.copy(distance = location.distanceTo(target).toInt())
+                            }
                         }
                     }
                     override fun onProviderDisabled(p: String) { gpsStatus = "GPS OFF" }
@@ -275,7 +309,12 @@ fun TeslaLayout() {
                 batteryLevel = batteryLevel,
                 instruction = currentInstruction,
                 gpsSpeed = currentSpeedGps,
-                routeDuration = currentRouteDuration
+                routeDuration = currentRouteDuration,
+                onCancelRoute = {
+                    currentInstruction = null
+                    currentRouteDuration = null
+                    routeGeoJson = null // 🌟 ZRUŠENÍ TRASY SMAŽE I ČÁRU
+                }
             )
 
             Box(modifier = Modifier.weight(0.60f).fillMaxWidth().background(Color.Black)) {
@@ -289,6 +328,9 @@ fun TeslaLayout() {
                                 is3dModeExternal = is3dMapMode,
                                 searchEngine = currentSearchEngine,
                                 currentLocation = currentGpsLocation,
+                                instruction = currentInstruction,
+                                routeGeoJson = routeGeoJson, // 🌟 PŘEDÁVÁME
+                                onRouteGeoJsonUpdated = { routeGeoJson = it }, // 🌟 PŘEDÁVÁME
                                 onInstructionUpdated = { currentInstruction = it },
                                 onRouteDurationUpdated = { currentRouteDuration = it }
                             )
@@ -301,6 +343,9 @@ fun TeslaLayout() {
                                     is3dModeExternal = is3dMapMode,
                                     searchEngine = currentSearchEngine,
                                     currentLocation = currentGpsLocation,
+                                    instruction = currentInstruction,
+                                    routeGeoJson = routeGeoJson, // 🌟 PŘEDÁVÁME
+                                    onRouteGeoJsonUpdated = { routeGeoJson = it }, // 🌟 PŘEDÁVÁME
                                     onInstructionUpdated = { currentInstruction = it },
                                     onRouteDurationUpdated = { currentRouteDuration = it }
                                 )
@@ -344,20 +389,20 @@ fun TeslaLayout() {
                 currentMapEngine = currentMapEngine,
                 onMapEngineChange = { newEngine ->
                     currentMapEngine = newEngine
-                    sharedPrefs.edit().putString("map_engine", newEngine).apply() // 🌟 UKLÁDÁNÍ
+                    sharedPrefs.edit().putString("map_engine", newEngine).apply()
                 },
                 currentSearchEngine = currentSearchEngine,
                 onSearchEngineChange = { newEngine ->
                     currentSearchEngine = newEngine
-                    sharedPrefs.edit().putString("search_engine", newEngine).apply() // 🌟 UKLÁDÁNÍ
+                    sharedPrefs.edit().putString("search_engine", newEngine).apply()
                 },
                 currentLocation = currentGpsLocation,
-                // PŘEDÁVÁNÍ A UKLÁDÁNÍ MAC ADRESY OBD
                 currentObdMac = savedObdMacAddress,
                 onObdMacChange = { newMac ->
                     savedObdMacAddress = newMac
                     sharedPrefs.edit().putString("obd_mac", newMac).apply()
-                }
+                },
+                currentRouteGeoJson = routeGeoJson // 🌟 PŘEDÁVÁME TRASU DO NASTAVENÍ PRO STAŽENÍ
             )
         }
 
@@ -376,10 +421,19 @@ fun TeslaLayout() {
 }
 
 @Composable
-fun InstrumentClusterWrapper(modifier: Modifier, carStateFlow: StateFlow<CarState>, gpsStatus: String?, batteryLevel: Int, instruction: NavInstruction?, gpsSpeed: Int, routeDuration: Int?) {
+fun InstrumentClusterWrapper(
+    modifier: Modifier,
+    carStateFlow: StateFlow<CarState>,
+    gpsStatus: String?,
+    batteryLevel: Int,
+    instruction: NavInstruction?,
+    gpsSpeed: Int,
+    routeDuration: Int?,
+    onCancelRoute: () -> Unit
+) {
     val carState by carStateFlow.collectAsState()
     val displaySpeed = if (carState.isConnected) carState.speed else gpsSpeed
-    InstrumentCluster(modifier = modifier, carState = carState.copy(speed = displaySpeed), gpsStatus = gpsStatus, batteryLevel = batteryLevel, instruction = instruction, routeDuration = routeDuration)
+    InstrumentCluster(modifier = modifier, carState = carState.copy(speed = displaySpeed), gpsStatus = gpsStatus, batteryLevel = batteryLevel, instruction = instruction, routeDuration = routeDuration, onCancelRoute = onCancelRoute)
 }
 
 // ==========================================
@@ -392,6 +446,9 @@ fun Viewport(
     is3dModeExternal: Boolean = false,
     searchEngine: String,
     currentLocation: Location?,
+    instruction: NavInstruction?,
+    routeGeoJson: String?,
+    onRouteGeoJsonUpdated: (String?) -> Unit,
     onInstructionUpdated: (NavInstruction?) -> Unit,
     onRouteDurationUpdated: (Int?) -> Unit
 ) {
@@ -400,10 +457,15 @@ fun Viewport(
     val mapViewportState = rememberMapViewportState { setCameraOptions { center(Point.fromLngLat(14.4378, 50.0755)); zoom(11.0); pitch(0.0) } }
 
     var searchQuery by remember { mutableStateOf("") }
-    var routeGeoJson by rememberSaveable { mutableStateOf<String?>(null) }
     var suggestions by remember { mutableStateOf<List<SearchSuggestion>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
+
+    LaunchedEffect(instruction) {
+        if (instruction == null) {
+            onRouteGeoJsonUpdated(null)
+        }
+    }
 
     LaunchedEffect(is3dModeExternal) {
         if (is3dModeExternal) mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().pitch(60.0).zoom(16.0).bearing(FollowPuckViewportStateBearing.SyncWithLocationPuck).build())
@@ -432,11 +494,11 @@ fun Viewport(
 
         if (searchEngine == "GOOGLE") {
             NetworkManager.fetchGoogleRoute(currentPoint, destinationPoint, googleApiKey) { geo, instr, dur ->
-                scope.launch(Dispatchers.Main) { routeGeoJson = geo; onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         } else {
             NetworkManager.fetchRouteManual(currentPoint, destinationPoint, context) { geo, instr, dur ->
-                scope.launch(Dispatchers.Main) { routeGeoJson = geo; onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         }
     }
@@ -460,6 +522,7 @@ fun Viewport(
                         }
                     }
                 }
+
                 FloatingActionButton(onClick = {
                     val tPitch = if (is3dModeExternal) 60.0 else 0.0
                     val tZoom = if (is3dModeExternal) 16.0 else 13.0
@@ -481,17 +544,25 @@ fun GoogleViewport(
     is3dModeExternal: Boolean = false,
     searchEngine: String,
     currentLocation: Location?,
+    instruction: NavInstruction?,
+    routeGeoJson: String?,
+    onRouteGeoJsonUpdated: (String?) -> Unit,
     onInstructionUpdated: (NavInstruction?) -> Unit,
     onRouteDurationUpdated: (Int?) -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     var searchQuery by remember { mutableStateOf("") }
-    var routeGeoJson by rememberSaveable { mutableStateOf<String?>(null) }
     var suggestions by remember { mutableStateOf<List<SearchSuggestion>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
     val cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(LatLng(50.0755, 14.4378), 13f) }
+
+    LaunchedEffect(instruction) {
+        if (instruction == null) {
+            onRouteGeoJsonUpdated(null)
+        }
+    }
 
     LaunchedEffect(currentLocation, is3dModeExternal) {
         if (is3dModeExternal && currentLocation != null) {
@@ -536,11 +607,11 @@ fun GoogleViewport(
 
         if (searchEngine == "GOOGLE") {
             NetworkManager.fetchGoogleRoute(currentPoint, destinationPoint, googleApiKey) { geo, instr, dur ->
-                scope.launch(Dispatchers.Main) { routeGeoJson = geo; onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         } else {
             NetworkManager.fetchRouteManual(currentPoint, destinationPoint, context) { geo, instr, dur ->
-                scope.launch(Dispatchers.Main) { routeGeoJson = geo; onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         }
     }
@@ -608,7 +679,7 @@ fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.ex
                 }
             }
         }
-        MapEffect(routeGeoJson) { mapView -> if (routeGeoJson != null) mapView.mapboxMap.getStyle { style -> if (style.styleSourceExists("route-source")) (style.getSource("route-source") as? GeoJsonSource)?.data(routeGeoJson) } }
+        MapEffect(routeGeoJson) { mapView -> if (routeGeoJson != null) mapView.mapboxMap.getStyle { style -> if (style.styleSourceExists("route-source")) (style.getSource("route-source") as? GeoJsonSource)?.data(routeGeoJson) } else mapView.mapboxMap.getStyle { style -> if (style.styleSourceExists("route-source")) (style.getSource("route-source") as? GeoJsonSource)?.data("") } }
     }
 }
 

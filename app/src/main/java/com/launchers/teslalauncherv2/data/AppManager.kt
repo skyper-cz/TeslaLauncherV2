@@ -11,7 +11,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-// Jak vypadá jedna aplikace v našem seznamu
 data class AppInfo(
     val label: String,
     val packageName: String,
@@ -20,32 +19,34 @@ data class AppInfo(
 )
 
 object AppManager {
-    // Funkce, která prohledá tablet a vrátí seřazený seznam aplikací
-    suspend fun getInstalledApps(context: Context): List<AppInfo> = withContext(Dispatchers.IO) {
-        val pm = context.packageManager
-        val intent = Intent(Intent.ACTION_MAIN, null).apply {
-            addCategory(Intent.CATEGORY_LAUNCHER)
+    // Zde si držíme aplikace v paměti
+    private var cachedApps: List<AppInfo> = emptyList()
+
+    // Tato funkce se zavolá tiše na pozadí hned po startu Launcheru
+    suspend fun prefetchApps(context: Context) = withContext(Dispatchers.IO) {
+        if (cachedApps.isEmpty()) {
+            val pm = context.packageManager
+            val intent = Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
+            val resolveInfos = pm.queryIntentActivities(intent, 0)
+
+            cachedApps = resolveInfos.map { resolveInfo ->
+                val label = resolveInfo.loadLabel(pm).toString()
+                val packageName = resolveInfo.activityInfo.packageName
+                val drawable = resolveInfo.loadIcon(pm)
+                val launchIntent = pm.getLaunchIntentForPackage(packageName) ?: Intent()
+
+                AppInfo(label, packageName, drawableToImageBitmap(drawable), launchIntent)
+            }
+                .filter { it.packageName != context.packageName }
+                .sortedBy { it.label.lowercase() }
         }
-
-        // Najdeme všechny aplikace, které se dají spustit
-        val resolveInfos = pm.queryIntentActivities(intent, 0)
-
-        resolveInfos.map { resolveInfo ->
-            val label = resolveInfo.loadLabel(pm).toString()
-            val packageName = resolveInfo.activityInfo.packageName
-            val drawable = resolveInfo.loadIcon(pm)
-            val launchIntent = pm.getLaunchIntentForPackage(packageName) ?: Intent()
-
-            AppInfo(label, packageName, drawableToImageBitmap(drawable), launchIntent)
-        }
-            .filter { it.packageName != context.packageName } // Skryje náš vlastní Tesla Launcher ze seznamu
-            .sortedBy { it.label.lowercase() } // Seřadí podle abecedy
     }
 
-    // Pomocná funkce: Převod starých Android ikonek do moderní Compose grafiky
+    // Tato funkce už jen okamžitě vrátí hotový seznam z paměti
+    fun getApps(): List<AppInfo> = cachedApps
+
     private fun drawableToImageBitmap(drawable: Drawable): ImageBitmap {
         if (drawable is BitmapDrawable) return drawable.bitmap.asImageBitmap()
-
         val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 1
         val height = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 1
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
