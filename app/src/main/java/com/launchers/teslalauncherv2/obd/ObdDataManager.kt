@@ -1,19 +1,19 @@
-package com.launchers.teslalauncherv2.data
+package com.launchers.teslalauncherv2.obd
 
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.util.Log
+import com.launchers.teslalauncherv2.data.CarState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.IOException
-import java.io.InputStream
-import java.io.OutputStream
 import java.util.UUID
 import kotlin.random.Random
 
@@ -75,7 +75,7 @@ object ObdDataManager {
     }
 
     // --- DEMO MÓD (Simulace pro testování doma) ---
-    private var demoJob: kotlinx.coroutines.Job? = null
+    private var demoJob: Job? = null
 
     fun startDemoMode() {
         if (isRunning) return
@@ -88,15 +88,15 @@ object ObdDataManager {
 
             while (isRunning) {
                 // Simulace jízdy
-                if (speed < 100) speed += Random.nextInt(0, 3) else speed -= Random.nextInt(0, 3)
-                rpm = (speed * 30) + 800 + Random.nextInt(-50, 50)
+                if (speed < 100) speed += Random.Default.nextInt(0, 3) else speed -= Random.Default.nextInt(0, 3)
+                rpm = (speed * 30) + 800 + Random.Default.nextInt(-50, 50)
                 if (temp < 90) temp += 1
 
                 updateState { it.copy(
                     speed = speed,
                     rpm = rpm,
                     coolantTemp = temp,
-                    engineLoad = Random.nextInt(20, 60),
+                    engineLoad = Random.Default.nextInt(20, 60),
                     fuelLevel = 75.5f,
                     batteryVoltage = "14.2V",
                     isConnected = false, // V demu nejsme připojeni k BT

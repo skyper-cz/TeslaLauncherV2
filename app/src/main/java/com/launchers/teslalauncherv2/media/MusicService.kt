@@ -1,18 +1,14 @@
-package com.launchers.teslalauncherv2.utils
+package com.launchers.teslalauncherv2.media
 
 import android.app.Notification
-import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.drawable.Icon
-import android.media.MediaMetadata
-import android.media.session.MediaController
-import android.media.session.MediaSessionManager
-import android.media.session.PlaybackState
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
+import android.media.session.MediaSession
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
-import com.launchers.teslalauncherv2.data.MediaManager
 
 class MusicService : NotificationListenerService() {
 
@@ -35,7 +31,7 @@ class MusicService : NotificationListenerService() {
         val text = extras.getString(Notification.EXTRA_TEXT) // Obvykle interpret
 
         // Zkusíme vytáhnout MediaSession token (to je klíč k ovládání)
-        val token = extras.getParcelable<android.media.session.MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION)
+        val token = extras.getParcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION)
 
         if (token != null || isMusicApp(sbn.packageName)) {
             // Zkusíme získat obal alba
@@ -67,13 +63,13 @@ class MusicService : NotificationListenerService() {
     }
 
     // Pomocná funkce pro převod Drawable na Bitmap
-    private fun drawableToBitmap(drawable: android.graphics.drawable.Drawable?): Bitmap? {
+    private fun drawableToBitmap(drawable: Drawable?): Bitmap? {
         if (drawable == null) return null
-        if (drawable is android.graphics.drawable.BitmapDrawable) return drawable.bitmap
+        if (drawable is BitmapDrawable) return drawable.bitmap
 
         try {
             val bitmap = Bitmap.createBitmap(drawable.intrinsicWidth.coerceAtLeast(1), drawable.intrinsicHeight.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-            val canvas = android.graphics.Canvas(bitmap)
+            val canvas = Canvas(bitmap)
             drawable.setBounds(0, 0, canvas.width, canvas.height)
             drawable.draw(canvas)
             return bitmap

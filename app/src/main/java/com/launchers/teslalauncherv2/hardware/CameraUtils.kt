@@ -1,7 +1,9 @@
-package com.launchers.teslalauncherv2.GUI
+package com.launchers.teslalauncherv2.hardware
 
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.TextureView
 import android.view.ViewGroup
@@ -26,7 +28,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.launchers.teslalauncherv2.utils.CustomUSBMonitor
+import com.launchers.teslalauncherv2.hardware.CustomUSBMonitor
 import com.serenegiant.usb.USBMonitor
 import com.serenegiant.usb.UVCCamera
 import com.serenegiant.usb.widget.UVCCameraTextureView
@@ -142,7 +144,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                Handler(Looper.getMainLooper()).postDelayed({
                     try {
                         val devices = usbMonitor.getDeviceList()
                         if (devices.isNotEmpty()) {

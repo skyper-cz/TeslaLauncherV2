@@ -1,4 +1,4 @@
-package com.launchers.teslalauncherv2.data
+package com.launchers.teslalauncherv2.media
 
 import android.graphics.Bitmap
 import kotlinx.coroutines.flow.MutableStateFlow

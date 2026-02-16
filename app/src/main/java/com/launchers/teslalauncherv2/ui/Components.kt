@@ -1,6 +1,7 @@
-package com.launchers.teslalauncherv2.GUI
+package com.launchers.teslalauncherv2.ui
 
 import android.content.Context
+import android.content.Intent
 import android.media.AudioManager
 import android.view.KeyEvent
 import android.widget.Toast
@@ -46,14 +47,21 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import com.launchers.teslalauncherv2.data.CarState
-import com.launchers.teslalauncherv2.data.MediaManager
+import com.launchers.teslalauncherv2.data.MapContinent
+import com.launchers.teslalauncherv2.data.MapCountry
+import com.launchers.teslalauncherv2.media.MediaManager
 import com.launchers.teslalauncherv2.data.NavInstruction
 import java.util.Locale
+import java.util.Calendar
+import java.text.SimpleDateFormat
+import com.launchers.teslalauncherv2.map.OfflineMapManager
+import com.launchers.teslalauncherv2.data.OfflineRegionsDatabase
 
 fun formatDistance(meters: Int): String {
     return if (meters >= 1000) String.format(Locale.US, "%.1f km", meters / 1000f) else "$meters m"
@@ -66,13 +74,14 @@ fun sendMediaKeyEvent(context: Context, keyCode: Int) {
 }
 
 @Composable
-fun InstrumentCluster(modifier: Modifier = Modifier, carState: CarState, gpsStatus: String?, batteryLevel: Int, instruction: NavInstruction?) {
+fun InstrumentCluster(modifier: Modifier = Modifier, carState: CarState, gpsStatus: String?, batteryLevel: Int, instruction: NavInstruction?, routeDuration: Int? = null) {
     Column(modifier = modifier.fillMaxWidth().background(Color.Black).padding(16.dp)) {
         TopStatusBar(gpsStatus, carState.isConnected, carState.isDemoMode, batteryLevel)
         Spacer(modifier = Modifier.weight(1f))
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                if (instruction != null) NavigationDisplay(instruction)
+                // Posíláme čas dál do vykreslení navigace
+                if (instruction != null) NavigationDisplay(instruction, routeDuration)
                 Spacer(modifier = Modifier.height(16.dp))
                 RpmBar(rpm = carState.rpm)
             }
@@ -105,7 +114,7 @@ fun TopStatusBar(gpsStatus: String?, isConnected: Boolean, isDemoMode: Boolean, 
 }
 
 @Composable
-fun NavigationDisplay(instruction: NavInstruction) {
+fun NavigationDisplay(instruction: NavInstruction, routeDurationSeconds: Int? = null) {
     Column(horizontalAlignment = Alignment.Start) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val icon = when {
@@ -118,6 +127,35 @@ fun NavigationDisplay(instruction: NavInstruction) {
             Text(text = formatDistance(instruction.distance), color = Color.Cyan, fontSize = 32.sp, fontWeight = FontWeight.Bold)
         }
         Text(text = instruction.text, color = Color.White, fontSize = 18.sp, maxLines = 2, fontWeight = FontWeight.Medium)
+
+        // ZOBRAZENÍ ČASU PŘÍJEZDU A ZBÝVAJÍCÍ DOBY
+        if (routeDurationSeconds != null && routeDurationSeconds > 0) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(8.dp)).padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Výpočet ETA (Kdy tam budeme)
+                val etaCalendar = Calendar.getInstance()
+                etaCalendar.add(Calendar.SECOND, routeDurationSeconds)
+                val etaFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+                val arrivalTime = etaFormat.format(etaCalendar.time)
+
+                // Výpočet zbývajícího času
+                val minutes = routeDurationSeconds / 60
+                val h = minutes / 60
+                val m = minutes % 60
+                val durationText = if (h > 0) "${h}h ${m}m" else "${m} min"
+
+                Icon(Icons.Default.Schedule, null, tint = Color.Gray, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(text = arrivalTime, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "·", color = Color.Gray, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = durationText, color = Color.Green, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+            }
+        }
     }
 }
 
@@ -192,50 +230,186 @@ fun SettingsScreen(
     currentMapEngine: String,
     onMapEngineChange: (String) -> Unit,
     currentSearchEngine: String,
-    onSearchEngineChange: (String) -> Unit
+    onSearchEngineChange: (String) -> Unit,
+    currentLocation: android.location.Location? // PŘIDANÝ PARAMETR PRO GPS
 ) {
     val context = LocalContext.current
-    var isDownloading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    var downloadMenuLevel by remember { mutableIntStateOf(0) }
+    var selectedContinent by remember { mutableStateOf<com.launchers.teslalauncherv2.data.MapContinent?>(null) }
+    var selectedCountry by remember { mutableStateOf<com.launchers.teslalauncherv2.data.MapCountry?>(null) }
+
+    var downloadingRegionId by remember { mutableStateOf<String?>(null) }
+    var downloadProgress by remember { mutableIntStateOf(0) }
+
+    // 🌟 AUTOMATICKÉ ZJIŠTĚNÍ MĚSTA Z GPS 🌟
+    var currentLocationName by remember { mutableStateOf("Hledám GPS lokaci...") }
+    LaunchedEffect(currentLocation) {
+        if (currentLocation != null) {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                try {
+                    val geocoder = android.location.Geocoder(context, java.util.Locale.getDefault())
+                    val addresses = geocoder.getFromLocation(currentLocation.latitude, currentLocation.longitude, 1)
+                    if (!addresses.isNullOrEmpty()) {
+                        // Vezme název města (locality) nebo kraje (adminArea)
+                        currentLocationName = addresses[0].locality ?: addresses[0].adminArea ?: "Aktuální poloha"
+                    }
+                } catch (e: Exception) {
+                    currentLocationName = "GPS dostupná (Offline)"
+                }
+            }
+        } else {
+            currentLocationName = "Čekám na signál GPS..."
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.95f)).clickable(enabled = false) {}, contentAlignment = Alignment.Center) {
-        Column(modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.9f).background(Color(0xFF1E1E1E), RoundedCornerShape(16.dp)).padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Column(
+            modifier = Modifier.fillMaxWidth(0.9f).fillMaxHeight(0.9f).background(Color(0xFF1E1E1E), RoundedCornerShape(16.dp)).padding(24.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("SOFTWARE & MAP SETTINGS", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                if (downloadMenuLevel > 0) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { downloadMenuLevel-- }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.Cyan)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = when (downloadMenuLevel) {
+                                1 -> "SELECT CONTINENT"
+                                2 -> selectedContinent?.name?.uppercase() ?: ""
+                                3 -> selectedCountry?.name?.uppercase() ?: ""
+                                else -> ""
+                            },
+                            color = Color.Cyan, fontSize = 20.sp, fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else {
+                    Text("SOFTWARE & MAP SETTINGS", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, "Close", tint = Color.Gray) }
             }
             HorizontalDivider(color = Color.DarkGray)
 
-            Column {
-                Text("Map Engine (Visuals)", color = Color.Gray, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = { onMapEngineChange("MAPBOX") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentMapEngine == "MAPBOX") Color.White else Color(0xFF333333), contentColor = if (currentMapEngine == "MAPBOX") Color.Black else Color.White), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Map, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("MAPBOX (Hybrid)", fontWeight = FontWeight.Bold) }
-                    Button(onClick = { onMapEngineChange("GOOGLE") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentMapEngine == "GOOGLE") Color.White else Color(0xFF333333), contentColor = if (currentMapEngine == "GOOGLE") Color.Black else Color.White), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Map, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("GOOGLE MAPS (Online)", fontWeight = FontWeight.Bold) }
+            if (downloadMenuLevel == 0) {
+                // ... (Původní Map Engine a Search Provider zůstávají beze změny)
+                Column {
+                    Text("Map Engine (Visuals)", color = Color.Gray, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = { onMapEngineChange("MAPBOX") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentMapEngine == "MAPBOX") Color.White else Color(0xFF333333), contentColor = if (currentMapEngine == "MAPBOX") Color.Black else Color.White), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Map, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("MAPBOX (Hybrid)", fontWeight = FontWeight.Bold) }
+                        Button(onClick = { onMapEngineChange("GOOGLE") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentMapEngine == "GOOGLE") Color.White else Color(0xFF333333), contentColor = if (currentMapEngine == "GOOGLE") Color.Black else Color.White), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Map, null, modifier = Modifier.size(18.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("GOOGLE MAPS (Online)", fontWeight = FontWeight.Bold) }
+                    }
+                }
+                HorizontalDivider(color = Color.DarkGray)
+                Column {
+                    Text("Search & Routing Provider", color = Color.Gray, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(onClick = { onSearchEngineChange("MAPBOX") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentSearchEngine == "MAPBOX") Color.White else Color(0xFF333333), contentColor = if (currentSearchEngine == "MAPBOX") Color.Black else Color.White), modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) { Text("MAPBOX", fontWeight = FontWeight.Bold) }
+                        Button(onClick = { onSearchEngineChange("GOOGLE") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentSearchEngine == "GOOGLE") Color.White else Color(0xFF333333), contentColor = if (currentSearchEngine == "GOOGLE") Color.Black else Color.White), modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) { Text("GOOGLE", fontWeight = FontWeight.Bold) }
+                    }
+                }
+                HorizontalDivider(color = Color.DarkGray)
+                Column {
+                    Text("Offline Regions", color = Color.Gray, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Zobrazení probíhajícího stahování
+                    if (downloadingRegionId != null) {
+                        Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF003333), RoundedCornerShape(8.dp)).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Downloading Region...", color = Color.Cyan, fontWeight = FontWeight.Bold)
+                                LinearProgressIndicator(progress = { downloadProgress / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), color = Color.Cyan, trackColor = Color.DarkGray)
+                            }
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Text("$downloadProgress %", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    // 🌟 KARTA: OBLAST KOLEM MĚ (Automatická lokace) 🌟
+                    Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF112233), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("📍 Smart Region: $currentLocationName", color = Color.Cyan, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text("Automatický okruh ~100 km", color = Color.Gray, fontSize = 14.sp)
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+
+                        if (currentLocation != null) {
+                            IconButton(
+                                onClick = {
+                                    downloadingRegionId = "auto_region"
+                                    downloadProgress = 0
+                                    Toast.makeText(context, "Start: Okolí $currentLocationName", Toast.LENGTH_SHORT).show()
+
+                                    // Vytvoří čtverec z aktuální GPS!
+                                    val geo = com.launchers.teslalauncherv2.data.createBoundingBoxAround(currentLocation.latitude, currentLocation.longitude, 50.0)
+
+                                    com.launchers.teslalauncherv2.map.OfflineMapManager.downloadRegion(
+                                        context = context, regionId = "auto_region", geometry = geo,
+                                        onProgress = { downloadProgress = it },
+                                        onComplete = { downloadingRegionId = null; Toast.makeText(context, "Hotovo!", Toast.LENGTH_LONG).show() },
+                                        onError = { downloadingRegionId = null; Toast.makeText(context, "Chyba: $it", Toast.LENGTH_LONG).show() }
+                                    )
+                                },
+                                modifier = Modifier.background(Color(0xFF005555), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.CloudDownload, "Download", tint = Color.White) }
+                        } else {
+                            // GPS ještě nenaběhla
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.Gray, strokeWidth = 2.dp)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Běžné ruční stahování
+                    Button(onClick = { downloadMenuLevel = 1 }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333)), modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Language, null, tint = Color.White); Spacer(modifier = Modifier.width(8.dp)); Text("BROWSE REGIONS MANUALLY", color = Color.White)
+                    }
                 }
             }
-
-            HorizontalDivider(color = Color.DarkGray)
-
-            Column {
-                Text("Search & Routing Provider", color = Color.Gray, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Button(onClick = { onSearchEngineChange("MAPBOX") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentSearchEngine == "MAPBOX") Color.White else Color(0xFF333333), contentColor = if (currentSearchEngine == "MAPBOX") Color.Black else Color.White), modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) { Text("MAPBOX", fontWeight = FontWeight.Bold) }
-                    Button(onClick = { onSearchEngineChange("GOOGLE") }, colors = ButtonDefaults.buttonColors(containerColor = if (currentSearchEngine == "GOOGLE") Color.White else Color(0xFF333333), contentColor = if (currentSearchEngine == "GOOGLE") Color.Black else Color.White), modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp)) { Text("GOOGLE", fontWeight = FontWeight.Bold) }
+            else if (downloadMenuLevel == 1) {
+                com.launchers.teslalauncherv2.data.OfflineRegionsDatabase.continents.forEach { continent ->
+                    Button(onClick = { selectedContinent = continent; downloadMenuLevel = 2 }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A)), modifier = Modifier.fillMaxWidth().height(60.dp), shape = RoundedCornerShape(12.dp)) {
+                        Text(continent.name, color = Color.White, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.Gray)
+                    }
                 }
             }
-
-            HorizontalDivider(color = Color.DarkGray)
-
-            Column {
-                Text("Permanent Offline Regions", color = Color.Gray, fontSize = 14.sp)
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(modifier = Modifier.fillMaxWidth().background(Color.Black, RoundedCornerShape(8.dp)).padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) { Text("Czech Republic", color = Color.White, fontWeight = FontWeight.Bold); Text("Vizuální mapa + Routing (850 MB)", color = Color.Gray, fontSize = 12.sp) }
-                    Text("DOWNLOADED", color = Color.Green, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            else if (downloadMenuLevel == 2) {
+                selectedContinent?.countries?.forEach { country ->
+                    Button(onClick = { selectedCountry = country; downloadMenuLevel = 3 }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A)), modifier = Modifier.fillMaxWidth().height(60.dp), shape = RoundedCornerShape(12.dp)) {
+                        Text(country.name, color = Color.White, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.Gray)
+                    }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(onClick = { Toast.makeText(context, "Otevře seznam států...", Toast.LENGTH_SHORT).show() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333)), modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null, tint = Color.White); Spacer(modifier = Modifier.width(8.dp)); Text("DOWNLOAD NEW REGION", color = Color.White) }
+            }
+            else if (downloadMenuLevel == 3) {
+                selectedCountry?.regions?.forEach { region ->
+                    val isThisDownloading = downloadingRegionId == region.id
+                    Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(region.name, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text(region.sizeMb, color = Color.Gray, fontSize = 14.sp)
+                        }
+                        if (!isThisDownloading) {
+                            IconButton(
+                                onClick = {
+                                    downloadingRegionId = region.id
+                                    downloadProgress = 0
+                                    com.launchers.teslalauncherv2.map.OfflineMapManager.downloadRegion(
+                                        context = context, regionId = region.id, geometry = region.geometry,
+                                        onProgress = { downloadProgress = it },
+                                        onComplete = { downloadingRegionId = null; Toast.makeText(context, "Hotovo!", Toast.LENGTH_LONG).show() },
+                                        onError = { downloadingRegionId = null; Toast.makeText(context, "Chyba: $it", Toast.LENGTH_LONG).show() }
+                                    )
+                                },
+                                modifier = Modifier.background(Color(0xFF444444), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.CloudDownload, "Download", tint = Color.White) }
+                        }
+                    }
+                }
             }
         }
     }
@@ -246,14 +420,15 @@ fun WideMusicPlayer(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val trackInfo by MediaManager.currentTrack.collectAsState()
 
-    Row(modifier = modifier.fillMaxHeight().background(Color(0xFF1A1A1A), shape = RoundedCornerShape(16.dp)).padding(8.dp).clickable { val intent = android.content.Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"); intent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK; try { context.startActivity(intent) } catch (_: Exception) {} }, verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = modifier.fillMaxHeight().background(Color(0xFF1A1A1A), shape = RoundedCornerShape(16.dp)).padding(8.dp).clickable { val intent =
+        Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"); intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK; try { context.startActivity(intent) } catch (_: Exception) {} }, verticalAlignment = Alignment.CenterVertically) {
         Box(modifier = Modifier.aspectRatio(1f).fillMaxHeight().background(Color.DarkGray, shape = RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
             if (trackInfo.albumArt != null) Image(bitmap = trackInfo.albumArt!!.asImageBitmap(), contentDescription = "Album", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop) else Icon(Icons.Default.MusicNote, null, tint = Color.Gray, modifier = Modifier.size(24.dp))
         }
         Spacer(modifier = Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-            Text(text = trackInfo.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            Text(text = trackInfo.artist, color = Color.Gray, fontSize = 12.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(text = trackInfo.title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(text = trackInfo.artist, color = Color.Gray, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         Spacer(modifier = Modifier.width(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(0.dp)) {

@@ -1,4 +1,4 @@
-package com.launchers.teslalauncherv2.data
+package com.launchers.teslalauncherv2.map
 
 import android.content.Context
 import android.net.ConnectivityManager
@@ -7,6 +7,8 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import com.launchers.teslalauncherv2.R
+import com.launchers.teslalauncherv2.data.NavInstruction
+import com.launchers.teslalauncherv2.data.SearchSuggestion
 import com.mapbox.geojson.Point
 import com.mapbox.geojson.LineString
 import okhttp3.*
@@ -22,7 +24,6 @@ object NetworkManager {
         Handler(Looper.getMainLooper()).post(block)
     }
 
-    // Bezpečná kontrola internetu
     private fun isOnline(context: Context): Boolean {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = connectivityManager.activeNetwork ?: return false
@@ -35,7 +36,7 @@ object NetworkManager {
     }
 
     // ==========================================
-    // 1. MAPBOX SLUŽBY (Tvoje původní, funkční)
+    // 1. MAPBOX SLUŽBY
     // ==========================================
 
     fun fetchSuggestions(query: String, context: Context, onResult: (List<SearchSuggestion>) -> Unit) {
@@ -48,7 +49,6 @@ object NetworkManager {
         }
 
         currentSearchCall?.cancel()
-
         val accessToken = context.getString(R.string.mapbox_access_token)
         val url = "https://api.mapbox.com/geocoding/v5/mapbox.places/${query}.json?access_token=$accessToken&limit=5&autocomplete=true"
         val request = Request.Builder().url(url).build()
@@ -86,10 +86,11 @@ object NetworkManager {
         })
     }
 
-    fun fetchRouteManual(origin: Point, destination: Point, context: Context, onRouteFound: (String?, NavInstruction?) -> Unit) {
+    // OPRAVA ZDE: onRouteFound nyní přijímá i Int? (duration)
+    fun fetchRouteManual(origin: Point, destination: Point, context: Context, onRouteFound: (String?, NavInstruction?, Int?) -> Unit) {
         if (!isOnline(context)) {
             runOnMain { Toast.makeText(context, "Offline: Trasa vyžaduje internet", Toast.LENGTH_LONG).show() }
-            runOnMain { onRouteFound(null, null) }
+            runOnMain { onRouteFound(null, null, null) }
             return
         }
 
@@ -103,13 +104,13 @@ object NetworkManager {
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 e.printStackTrace()
-                runOnMain { onRouteFound(null, null) }
+                runOnMain { onRouteFound(null, null, null) }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!it.isSuccessful) {
-                        runOnMain { onRouteFound(null, null) }
+                        runOnMain { onRouteFound(null, null, null) }
                         return
                     }
                     val jsonString = it.body?.string() ?: return
@@ -120,6 +121,10 @@ object NetworkManager {
                             val route = routes.getJSONObject(0)
                             val geometry = route.getJSONObject("geometry")
                             val featureString = """{ "type": "FeatureCollection", "features": [{ "type": "Feature", "properties": {}, "geometry": $geometry }] }"""
+
+                            // Získání celkového času v sekundách
+                            val durationSeconds = route.optDouble("duration", 0.0).toInt()
+
                             var navInstruction: NavInstruction? = null
                             val legs = route.getJSONArray("legs")
                             if (legs.length() > 0) {
@@ -134,17 +139,18 @@ object NetworkManager {
                                     val distance = step.getDouble("distance").toInt()
                                     val modifier = if (maneuver.has("modifier")) maneuver.getString("modifier") else null
 
-                                    // Ujisti se, že pořadí parametrů sedí s tvojí data class NavInstruction!
-                                    navInstruction = NavInstruction(text, distance, modifier, maneuverPoint)
+                                    navInstruction =
+                                        NavInstruction(text, distance, modifier, maneuverPoint)
                                 }
                             }
-                            runOnMain { onRouteFound(featureString, navInstruction) }
+                            // Odesíláme všechny 3 hodnoty!
+                            runOnMain { onRouteFound(featureString, navInstruction, durationSeconds) }
                         } else {
-                            runOnMain { onRouteFound(null, null) }
+                            runOnMain { onRouteFound(null, null, null) }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        runOnMain { onRouteFound(null, null) }
+                        runOnMain { onRouteFound(null, null, null) }
                     }
                 }
             }
@@ -153,11 +159,10 @@ object NetworkManager {
 
 
     // ==========================================
-    // 2. GOOGLE MAPS SLUŽBY (Nové)
+    // 2. GOOGLE MAPS SLUŽBY
     // ==========================================
 
     fun fetchGoogleSuggestions(query: String, apiKey: String, onResult: (List<SearchSuggestion>) -> Unit) {
-        // Použijeme Geocoding API, které je mnohem chytřejší na adresy a vrací rovnou GPS
         val url = "https://maps.googleapis.com/maps/api/geocode/json?address=${URLEncoder.encode(query, "UTF-8")}&key=$apiKey"
         val request = Request.Builder().url(url).build()
 
@@ -178,7 +183,6 @@ object NetworkManager {
                         if (jsonArray != null) {
                             for (i in 0 until Math.min(jsonArray.length(), 5)) {
                                 val item = jsonArray.getJSONObject(i)
-                                // Geocoding nepoužívá 'name', ale 'formatted_address'
                                 val name = item.getString("formatted_address")
                                 val loc = item.getJSONObject("geometry").getJSONObject("location")
                                 val point = Point.fromLngLat(loc.getDouble("lng"), loc.getDouble("lat"))
@@ -193,20 +197,21 @@ object NetworkManager {
         })
     }
 
-    fun fetchGoogleRoute(start: Point, end: Point, apiKey: String, onRouteFound: (String?, NavInstruction?) -> Unit) {
+    // OPRAVA ZDE: onRouteFound nyní přijímá i Int? (duration)
+    fun fetchGoogleRoute(start: Point, end: Point, apiKey: String, onRouteFound: (String?, NavInstruction?, Int?) -> Unit) {
         val url = "https://maps.googleapis.com/maps/api/directions/json?origin=${start.latitude()},${start.longitude()}&destination=${end.latitude()},${end.longitude()}&key=$apiKey"
         val request = Request.Builder().url(url).build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 e.printStackTrace()
-                runOnMain { onRouteFound(null, null) }
+                runOnMain { onRouteFound(null, null, null) }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!it.isSuccessful) {
-                        runOnMain { onRouteFound(null, null) }
+                        runOnMain { onRouteFound(null, null, null) }
                         return
                     }
                     val jsonString = it.body?.string() ?: return
@@ -218,14 +223,20 @@ object NetworkManager {
                             val route = routes.getJSONObject(0)
                             val polyline = route.getJSONObject("overview_polyline").getString("points")
 
-                            // Kouzlo: Převod Google čáry do Mapbox GeoJSON formátu, aby seděl zbytek aplikace
                             val lineString = LineString.fromPolyline(polyline, 5)
                             val geometryJson = lineString.toJson()
                             val featureString = """{ "type": "FeatureCollection", "features": [{ "type": "Feature", "properties": {}, "geometry": $geometryJson }] }"""
+
                             var navInstruction: NavInstruction? = null
+                            var durationSeconds = 0
+
                             val legs = route.getJSONArray("legs")
                             if (legs.length() > 0) {
-                                val steps = legs.getJSONObject(0).getJSONArray("steps")
+                                val leg = legs.getJSONObject(0)
+                                // Získání celkového času od Googlu
+                                durationSeconds = leg.getJSONObject("duration").getInt("value")
+
+                                val steps = leg.getJSONArray("steps")
                                 if (steps.length() > 0) {
                                     val step = steps.getJSONObject(0)
                                     val text = step.getString("html_instructions").replace(Regex("<.*?>"), "")
@@ -233,17 +244,18 @@ object NetworkManager {
                                     val endLoc = step.getJSONObject("end_location")
                                     val maneuverPoint = Point.fromLngLat(endLoc.getDouble("lng"), endLoc.getDouble("lat"))
 
-                                    // Sestavení instrukce (Google neposkytuje modifikátor tak snadno jako Mapbox, tak dáváme null)
-                                    navInstruction = NavInstruction(text, distance, null, maneuverPoint)
+                                    navInstruction =
+                                        NavInstruction(text, distance, null, maneuverPoint)
                                 }
                             }
-                            runOnMain { onRouteFound(featureString, navInstruction) }
+                            // Odesíláme všechny 3 hodnoty!
+                            runOnMain { onRouteFound(featureString, navInstruction, durationSeconds) }
                         } else {
-                            runOnMain { onRouteFound(null, null) }
+                            runOnMain { onRouteFound(null, null, null) }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        runOnMain { onRouteFound(null, null) }
+                        runOnMain { onRouteFound(null, null, null) }
                     }
                 }
             }

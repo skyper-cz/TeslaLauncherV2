@@ -1,5 +1,8 @@
 package com.launchers.teslalauncherv2
 
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -43,19 +46,19 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 
-// IMPORTY PROJEKTU
-import com.launchers.teslalauncherv2.GUI.Dock
-import com.launchers.teslalauncherv2.GUI.GearSelector
-import com.launchers.teslalauncherv2.GUI.InstrumentCluster
-import com.launchers.teslalauncherv2.GUI.NightPanelScreen
-import com.launchers.teslalauncherv2.GUI.ReverseCameraScreen
-import com.launchers.teslalauncherv2.GUI.SettingsScreen
-import com.launchers.teslalauncherv2.GUI.TeslaSearchBar
+// IMPORTY PROJEKTU - AKTUALIZOVÁNO PRO NOVOU STRUKTURU SLOŽEK
+import com.launchers.teslalauncherv2.ui.Dock
+import com.launchers.teslalauncherv2.ui.GearSelector
+import com.launchers.teslalauncherv2.ui.InstrumentCluster
+import com.launchers.teslalauncherv2.ui.NightPanelScreen
+import com.launchers.teslalauncherv2.hardware.ReverseCameraScreen
+import com.launchers.teslalauncherv2.ui.SettingsScreen
+import com.launchers.teslalauncherv2.ui.TeslaSearchBar
 import com.launchers.teslalauncherv2.data.CarState
 import com.launchers.teslalauncherv2.data.NavInstruction
-import com.launchers.teslalauncherv2.data.ObdDataManager
+import com.launchers.teslalauncherv2.obd.ObdDataManager
 import com.launchers.teslalauncherv2.data.SearchSuggestion
-import com.launchers.teslalauncherv2.data.NetworkManager
+import com.launchers.teslalauncherv2.map.NetworkManager
 
 // MAPBOX IMPORTY
 import com.mapbox.geojson.Point
@@ -78,6 +81,7 @@ import com.mapbox.maps.plugin.viewport.data.FollowPuckViewportStateOptions
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.eq
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.get
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.literal
+import com.mapbox.maps.plugin.PuckBearing
 
 // GOOGLE MAPS IMPORTY
 import com.google.android.gms.common.ConnectionResult
@@ -96,6 +100,14 @@ const val OBD_MAC_ADDRESS = "00:10:CC:4F:36:03"
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // TÍMTO SKRYJEME HORNÍ I SPODNÍ SYSTÉMOVOU LIŠTU (Immersive Mode)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).let { controller ->
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+
         enableEdgeToEdge()
         setContent {
             TeslaLauncherTheme {
@@ -166,7 +178,7 @@ fun TeslaLayout() {
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
                 currentGear = "R"
             } else {
-                currentGear = gear // Pokud není perm na kameru, jen zařadí R bez obrazu
+                currentGear = gear
             }
         } else currentGear = gear
     }
@@ -218,7 +230,6 @@ fun TeslaLayout() {
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // INSTRUMENT CLUSTER
             InstrumentClusterWrapper(
                 modifier = Modifier.weight(0.25f),
                 carStateFlow = carStateFlow,
@@ -231,7 +242,6 @@ fun TeslaLayout() {
 
             Box(modifier = Modifier.weight(0.60f).fillMaxWidth().background(Color.Black)) {
 
-                // --- MAPOVÁ VRSTVA (Skryje se, pokud je zařazeno R) ---
                 if (currentGear != "R") {
                     when (currentMapEngine) {
                         "MAPBOX" -> {
@@ -269,7 +279,6 @@ fun TeslaLayout() {
                         }
                     }
                 } else {
-                    // --- COUVACÍ KAMERA ---
                     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
                         ReverseCameraScreen()
                         Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold,
@@ -284,6 +293,7 @@ fun TeslaLayout() {
             Dock(modifier = Modifier.weight(0.15f), isNightPanel = isNightPanel, onNightPanelToggle = { isNightPanel = !isNightPanel }, onOpenSettings = { isSettingsOpen = true })
         }
 
+        // TADY JE TA ZMĚNA! Přidali jsme currentLocation
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }
             SettingsScreen(
@@ -291,7 +301,8 @@ fun TeslaLayout() {
                 currentMapEngine = currentMapEngine,
                 onMapEngineChange = { currentMapEngine = it },
                 currentSearchEngine = currentSearchEngine,
-                onSearchEngineChange = { currentSearchEngine = it }
+                onSearchEngineChange = { currentSearchEngine = it },
+                currentLocation = currentGpsLocation
             )
         }
 
@@ -351,7 +362,12 @@ fun Viewport(
         focusManager.clearFocus()
         suggestions = emptyList()
         searchQuery = ""
-        mapViewportState.flyTo(com.mapbox.maps.CameraOptions.Builder().center(destinationPoint).zoom(14.0).build(), com.mapbox.maps.plugin.animation.MapAnimationOptions.Builder().duration(1500).build())
+
+        val tPitch = if (is3dModeExternal) 60.0 else 0.0
+        val tZoom = if (is3dModeExternal) 16.0 else 13.0
+        val tBear = if (is3dModeExternal) FollowPuckViewportStateBearing.SyncWithLocationPuck else FollowPuckViewportStateBearing.Constant(0.0)
+        mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().bearing(tBear).pitch(tPitch).zoom(tZoom).build())
+
         val currentPoint = if (currentLocation != null) Point.fromLngLat(currentLocation.longitude, currentLocation.latitude) else (mapViewportState.cameraState?.center ?: Point.fromLngLat(14.4378, 50.0755))
 
         if (searchEngine == "GOOGLE") {
@@ -417,9 +433,19 @@ fun GoogleViewport(
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
     val cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(LatLng(50.0755, 14.4378), 13f) }
 
-    LaunchedEffect(is3dModeExternal) {
-        val update = CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(cameraPositionState.position.target).zoom(if (is3dModeExternal) 16f else 13f).tilt(if (is3dModeExternal) 60f else 0f).bearing(cameraPositionState.position.bearing).build())
-        cameraPositionState.animate(update, 1500)
+    LaunchedEffect(currentLocation, is3dModeExternal) {
+        if (is3dModeExternal && currentLocation != null) {
+            cameraPositionState.animate(
+                CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder()
+                        .target(LatLng(currentLocation.latitude, currentLocation.longitude))
+                        .zoom(16f)
+                        .tilt(60f)
+                        .bearing(currentLocation.bearing)
+                        .build()
+                ), 1500
+            )
+        }
     }
 
     LaunchedEffect(searchQuery) {
@@ -434,7 +460,18 @@ fun GoogleViewport(
         focusManager.clearFocus()
         suggestions = emptyList()
         searchQuery = ""
-        scope.launch { cameraPositionState.animate(CameraUpdateFactory.newLatLngZoom(LatLng(destinationPoint.latitude(), destinationPoint.longitude()), 14f), 1500) }
+
+        scope.launch {
+            val tTilt = if (is3dModeExternal) 60f else 0f
+            val tZoom = if (is3dModeExternal) 16f else 13f
+            val tBear = if (is3dModeExternal && currentLocation != null) currentLocation.bearing else 0f
+            val targetLatLng = if (currentLocation != null) LatLng(currentLocation.latitude, currentLocation.longitude) else cameraPositionState.position.target
+
+            cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder().target(targetLatLng).zoom(tZoom).tilt(tTilt).bearing(tBear).build()
+            ), 1000)
+        }
+
         val currentPoint = if (currentLocation != null) Point.fromLngLat(currentLocation.longitude, currentLocation.latitude) else Point.fromLngLat(cameraPositionState.position.target.longitude, cameraPositionState.position.target.latitude)
 
         if (searchEngine == "GOOGLE") {
@@ -469,11 +506,11 @@ fun GoogleViewport(
                 }
                 FloatingActionButton(onClick = {
                     scope.launch {
-                        val targetTilt = if (is3dModeExternal) 60f else 0f
-                        val targetZoom = if (is3dModeExternal) 16f else 13f
-                        val targetBearing = if (is3dModeExternal) cameraPositionState.position.bearing else 0f
-                        if (currentLocation != null) cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(LatLng(currentLocation.latitude, currentLocation.longitude)).zoom(targetZoom).tilt(targetTilt).bearing(targetBearing).build()), 1000)
-                        else cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(cameraPositionState.position.target).zoom(targetZoom).tilt(targetTilt).bearing(targetBearing).build()), 1000)
+                        val tTilt = if (is3dModeExternal) 60f else 0f
+                        val tZoom = if (is3dModeExternal) 16f else 13f
+                        val tBear = if (is3dModeExternal && currentLocation != null) currentLocation.bearing else 0f
+                        if (currentLocation != null) cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(LatLng(currentLocation.latitude, currentLocation.longitude)).zoom(tZoom).tilt(tTilt).bearing(tBear).build()), 1000)
+                        else cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(cameraPositionState.position.target).zoom(tZoom).tilt(tTilt).bearing(tBear).build()), 1000)
                     }
                 }, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), containerColor = Color.Black, contentColor = Color.White) { Icon(Icons.Default.MyLocation, "Locate Me") }
             }
@@ -491,10 +528,25 @@ fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.ex
             mapView.mapboxMap.loadStyleUri(Style.TRAFFIC_NIGHT) { style ->
                 val sourceId = "route-source"; val layerId = "route-layer"
                 if (!style.styleSourceExists(sourceId)) style.addSource(geoJsonSource(sourceId) { data("") })
-                if (!style.styleLayerExists(layerId)) style.addLayer(lineLayer(layerId, sourceId) { lineColor("#00B0FF"); lineWidth(6.0); lineCap(LineCap.ROUND); lineJoin(LineJoin.ROUND) })
+                if (!style.styleLayerExists(layerId)) {
+                    style.addLayer(lineLayer(layerId, sourceId) {
+                        lineColor("#00B0FF")
+                        lineWidth(8.0)
+                        lineOpacity(0.65)
+                        lineCap(LineCap.ROUND)
+                        lineJoin(LineJoin.ROUND)
+                    })
+                }
                 if (!style.styleLayerExists("3d-buildings")) { val bLayer = FillExtrusionLayer("3d-buildings", "composite"); bLayer.sourceLayer("building"); bLayer.filter(eq(get("extrude"), literal("true"))); bLayer.minZoom(15.0); bLayer.fillExtrusionColor(Color.DarkGray.toArgb()); bLayer.fillExtrusionOpacity(0.8); bLayer.fillExtrusionHeight(get("height")); bLayer.fillExtrusionBase(get("min_height")); style.addLayer(bLayer) }
             }
-            if (locationPermissionGranted) mapView.location.updateSettings { enabled = true; pulsingEnabled = true }
+            if (locationPermissionGranted) {
+                mapView.location.updateSettings {
+                    enabled = true
+                    pulsingEnabled = true
+                    puckBearingEnabled = true
+                    puckBearing = PuckBearing.COURSE
+                }
+            }
         }
         MapEffect(routeGeoJson) { mapView -> if (routeGeoJson != null) mapView.mapboxMap.getStyle { style -> if (style.styleSourceExists("route-source")) (style.getSource("route-source") as? GeoJsonSource)?.data(routeGeoJson) } }
     }
@@ -515,7 +567,7 @@ fun GoogleMapDisplay(modifier: Modifier = Modifier, cameraPositionState: com.goo
         points
     }
     GoogleMap(modifier = modifier, cameraPositionState = cameraPositionState, properties = mapProperties, uiSettings = uiSettings) {
-        if (routePoints.isNotEmpty()) Polyline(points = routePoints, color = Color(0xFF00B0FF), width = 18f, geodesic = true)
+        if (routePoints.isNotEmpty()) Polyline(points = routePoints, color = Color(0xAA00B0FF), width = 24f, geodesic = true)
     }
 }
 

@@ -1,4 +1,4 @@
-package com.launchers.teslalauncherv2.utils
+package com.launchers.teslalauncherv2.hardware
 
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -120,7 +120,9 @@ class CustomUSBMonitor(context: Context, private val listener: USBMonitor.OnDevi
     }
 
     fun getDeviceList(): List<UsbDevice> {
-        return try { ArrayList(usbManager.deviceList.values) } catch (e: Exception) { emptyList() }
+        return try {
+            ArrayList(usbManager.deviceList.values)
+        } catch (e: Exception) { emptyList() }
     }
 
     fun hasPermission(device: UsbDevice): Boolean = usbManager.hasPermission(device)

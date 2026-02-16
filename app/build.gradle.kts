@@ -83,13 +83,13 @@ dependencies {
     implementation("com.mapbox.navigationcore:android:3.1.0")
     // ------------------------------------------------
 
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp:5.3.2")
     implementation("com.github.jiangdongguo:AndroidUSBCamera:2.3.4")
 
     // Google Maps pro Compose
-    implementation("com.google.maps.android:maps-compose:4.4.1")
+    implementation("com.google.maps.android:maps-compose:8.1.0")
     // Služby Google Play (obsahuje nástroj na detekci GMS)
-    implementation("com.google.android.gms:play-services-maps:19.0.0")
+    implementation("com.google.android.gms:play-services-maps:20.0.0")
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
