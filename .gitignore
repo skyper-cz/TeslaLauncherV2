@@ -2,6 +2,14 @@
 **/build/
 !src/**/build/
 
+# Ignorovat složky s release buildy
+release/
+app/release/
+
+# Pro jistotu ignorovat všechny vygenerované instalační soubory kdekoliv v projektu
+*.apk
+*.aab
+
 # Ignore Gradle GUI config
 gradle-app.setting
 

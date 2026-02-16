@@ -9,84 +9,120 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.UUID
 import com.launchers.teslalauncherv2.data.CarState
+import java.io.InputStream
+import java.io.OutputStream
 
 object ObdDataManager {
     private val _carState = MutableStateFlow(CarState())
     val carState: StateFlow<CarState> = _carState.asStateFlow()
 
-    // Sem ukládáme našeho hlídače na pozadí
     private var monitorJob: Job? = null
-
-    // Zámek, který říká "Uživatel to vypnul schválně, už se nepokusuj připojit"
     private var isUserStopped = false
 
     @SuppressLint("MissingPermission")
     fun connect(context: Context, macAddress: String) {
         isUserStopped = false
-
-        // Pokud už nějaký hlídač běží, zastavíme ho, abychom neměli dva najednou
         monitorJob?.cancel()
 
-        // 🌟 TOTO JE NÁŠ HLÍDAČ (Auto-Reconnect Loop) 🌟
         monitorJob = CoroutineScope(Dispatchers.IO).launch {
-
-            // Smyčka běží neustále, dokud aplikaci natvrdo nezavřeme
             while (!isUserStopped) {
                 try {
-                    // 1. POKUS O PŘIPOJENÍ
                     val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
                     val adapter = bluetoothManager.adapter
                     val device = adapter?.getRemoteDevice(macAddress)
-
-                    // Standardní sériový port (SPP) pro OBD2 adaptéry
                     val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
                     val socket = device?.createRfcommSocketToServiceRecord(uuid)
 
-                    // Zkusíme otevřít spojení (pokud adaptér není v dosahu, hodí to Exception a skočí to do catch bloku)
                     socket?.connect()
-
-                    // Pokud jsme prošli přes connect(), jsme připojeni!
                     _carState.value = _carState.value.copy(isConnected = true, error = null)
 
                     val inStream = socket?.inputStream
                     val outStream = socket?.outputStream
 
-                    // 2. SMYČKA ČTENÍ DAT (Běží, dokud se spojení fyzicky nepřeruší)
+                    // Inicializace ELM327 (Reset a vypnutí echa)
+                    sendCommand(outStream, inStream, "ATZ\r")
+                    delay(500)
+                    sendCommand(outStream, inStream, "ATE0\r")
+                    delay(200)
+
                     while (!isUserStopped && socket?.isConnected == true) {
+                        // 1. Čtení rychlosti (PID 010D)
+                        val speedRaw = sendCommand(outStream, inStream, "010D\r")
+                        val speed = parseSpeed(speedRaw)
 
-                        // ==========================================
-                        // ZDE JE TVŮJ KÓD PRO ČTENÍ DAT (PID příkazy)
-                        // Např: outStream.write("01 0D\r".toByteArray())
-                        // ==========================================
+                        delay(100) // Pauza mezi příkazy, aby se ELM nezahltil
 
-                        // Zabraňuje přetížení Bluetooth sběrnice
-                        delay(200)
+                        // 2. Čtení otáček (PID 010C)
+                        val rpmRaw = sendCommand(outStream, inStream, "010C\r")
+                        val rpm = parseRpm(rpmRaw)
+
+                        // Aktualizace budíků, pokud přišla validní data
+                        if (speed != null || rpm != null) {
+                            _carState.value = _carState.value.copy(
+                                speed = speed ?: _carState.value.speed,
+                                rpm = rpm ?: _carState.value.rpm
+                            )
+                        }
+
+                        delay(200) // Cyklus čtení
                     }
-
-                    // Pokud čtecí smyčka skončí (např. socket.isConnected začne být false), bezpečně zavřeme
                     socket?.close()
 
                 } catch (e: Exception) {
-                    // 3. PŘIPOJENÍ SELHALO, NEBO SPADLO BĚHEM JÍZDY
-                    // Vynulujeme budíky a ukážeme varování
                     _carState.value = _carState.value.copy(
-                        isConnected = false,
-                        speed = 0,
-                        rpm = 0,
-                        error = "Spojení ztraceno. Hledám OBD..."
+                        isConnected = false, speed = 0, rpm = 0, error = "Hledám OBD..."
                     )
                 }
 
-                // 4. ČEKÁNÍ PŘED DALŠÍM POKUSEM (5 vteřin)
-                // Abychom nevybili baterii neustálým spamováním Bluetooth modulu
-                if (!isUserStopped) {
-                    delay(5000)
-                }
+                if (!isUserStopped) delay(5000)
             }
         }
     }
 
-    // Tuto funkci volá MainActivity při ukončení aplikace (onDestroy)
+    private fun sendCommand(outStream: OutputStream?, inStream: InputStream?, command: String): String {
+        try {
+            outStream?.write(command.toByteArray())
+            outStream?.flush()
+
+            val buffer = ByteArray(1024)
+            var bytesRead: Int
+            val response = StringBuilder()
+
+            // Čteme, dokud neuvidíme znak '>' (ELM327 prompt)
+            while (inStream?.read(buffer).also { bytesRead = it ?: -1 } != -1) {
+                val chunk = String(buffer, 0, bytesRead)
+                response.append(chunk)
+                if (chunk.contains(">")) break
+            }
+            return response.toString().replace(">", "").trim()
+        } catch (e: Exception) {
+            return ""
+        }
+    }
+
+    private fun parseSpeed(rawData: String): Int? {
+        // Očekávaný formát: "41 0D XX" (XX je rychlost v Hex)
+        val cleanData = rawData.replace(" ", "").replace("\r", "").replace("\n", "")
+        if (cleanData.contains("410D") && cleanData.length >= 6) {
+            val hex = cleanData.substring(cleanData.indexOf("410D") + 4, cleanData.indexOf("410D") + 6)
+            return hex.toIntOrNull(16)
+        }
+        return null
+    }
+
+    private fun parseRpm(rawData: String): Int? {
+        // Očekávaný formát: "41 0C XX YY" (Otáčky = ((XX * 256) + YY) / 4)
+        val cleanData = rawData.replace(" ", "").replace("\r", "").replace("\n", "")
+        if (cleanData.contains("410C") && cleanData.length >= 8) {
+            val hexA = cleanData.substring(cleanData.indexOf("410C") + 4, cleanData.indexOf("410C") + 6)
+            val hexB = cleanData.substring(cleanData.indexOf("410C") + 6, cleanData.indexOf("410C") + 8)
+            val a = hexA.toIntOrNull(16) ?: 0
+            val b = hexB.toIntOrNull(16) ?: 0
+            return ((a * 256) + b) / 4
+        }
+        return null
+    }
+
     fun stop() {
         isUserStopped = true
         monitorJob?.cancel()

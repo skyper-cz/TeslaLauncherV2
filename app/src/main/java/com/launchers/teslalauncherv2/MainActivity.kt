@@ -148,10 +148,7 @@ fun TeslaLayout() {
 
     var currentInstruction by remember { mutableStateOf<NavInstruction?>(null) }
     var currentRouteDuration by remember { mutableStateOf<Int?>(null) }
-
-    // 🌟 ZMĚNA 1: TRASA JE ULOŽENÁ ZDE NAHOŘE (Nezmizí při couvací kameře)
     var routeGeoJson by rememberSaveable { mutableStateOf<String?>(null) }
-
     var currentSpeedGps by remember { mutableIntStateOf(0) }
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var currentGpsLocation by remember { mutableStateOf<Location?>(null) }
@@ -179,6 +176,9 @@ fun TeslaLayout() {
     var isLocationPermissionGranted by remember { mutableStateOf(false) }
     var isManualOverrideActive by remember { mutableStateOf(false) }
 
+    // 🌟 OPRAVA: Efektivní rychlost kombinuje OBD i GPS pro správné řazení 🌟
+    val effectiveSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
+
     LaunchedEffect(lastManualShiftTime) {
         if (lastManualShiftTime > 0) {
             isManualOverrideActive = true
@@ -187,11 +187,13 @@ fun TeslaLayout() {
         }
     }
 
-    LaunchedEffect(carStateSnapshot.speed, currentGear, isManualOverrideActive) {
+    LaunchedEffect(effectiveSpeed, currentGear, isManualOverrideActive) {
         if (currentGear == "D") is3dMapMode = true else if (currentGear == "P") is3dMapMode = false
+
+        // Změna převodovky už reaguje i na jízdu podle GPS!
         if (!isManualOverrideActive) {
-            if (carStateSnapshot.speed > 5 && currentGear != "D" && currentGear != "R") currentGear = "D"
-            if (carStateSnapshot.speed < 4 && currentGear != "P") currentGear = "P"
+            if (effectiveSpeed > 5 && currentGear != "D" && currentGear != "R") currentGear = "D"
+            if (effectiveSpeed < 4 && currentGear != "P") currentGear = "P"
         }
     }
 
@@ -276,13 +278,17 @@ fun TeslaLayout() {
                         gpsStatus = null
                         currentGpsLocation = location
                         if (location.hasSpeed()) currentSpeedGps = (location.speed * 3.6f).toInt()
+
                         val instruction = currentInstruction
                         if (instruction?.maneuverPoint != null) {
-                            val target = Location("T"); target.latitude = instruction.maneuverPoint.latitude(); target.longitude = instruction.maneuverPoint.longitude()
+                            val target = Location("T").apply {
+                                latitude = instruction.maneuverPoint.latitude()
+                                longitude = instruction.maneuverPoint.longitude()
+                            }
+
+                            // 🌟 OPRAVA: Už nemažeme trasu při dosažení křižovatky! 🌟
                             if (location.distanceTo(target) < 30) {
-                                currentInstruction = null
-                                currentRouteDuration = null
-                                routeGeoJson = null // V cíli smažeme i čáru
+                                currentInstruction = instruction.copy(distance = 0)
                             } else {
                                 currentInstruction = instruction.copy(distance = location.distanceTo(target).toInt())
                             }
@@ -298,8 +304,6 @@ fun TeslaLayout() {
         }
     }
 
-    val finalSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
-
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             InstrumentClusterWrapper(
@@ -313,7 +317,7 @@ fun TeslaLayout() {
                 onCancelRoute = {
                     currentInstruction = null
                     currentRouteDuration = null
-                    routeGeoJson = null // 🌟 ZRUŠENÍ TRASY SMAŽE I ČÁRU
+                    routeGeoJson = null
                 }
             )
 
@@ -329,8 +333,8 @@ fun TeslaLayout() {
                                 searchEngine = currentSearchEngine,
                                 currentLocation = currentGpsLocation,
                                 instruction = currentInstruction,
-                                routeGeoJson = routeGeoJson, // 🌟 PŘEDÁVÁME
-                                onRouteGeoJsonUpdated = { routeGeoJson = it }, // 🌟 PŘEDÁVÁME
+                                routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = { routeGeoJson = it },
                                 onInstructionUpdated = { currentInstruction = it },
                                 onRouteDurationUpdated = { currentRouteDuration = it }
                             )
@@ -344,8 +348,8 @@ fun TeslaLayout() {
                                     searchEngine = currentSearchEngine,
                                     currentLocation = currentGpsLocation,
                                     instruction = currentInstruction,
-                                    routeGeoJson = routeGeoJson, // 🌟 PŘEDÁVÁME
-                                    onRouteGeoJsonUpdated = { routeGeoJson = it }, // 🌟 PŘEDÁVÁME
+                                    routeGeoJson = routeGeoJson,
+                                    onRouteGeoJsonUpdated = { routeGeoJson = it },
                                     onInstructionUpdated = { currentInstruction = it },
                                     onRouteDurationUpdated = { currentRouteDuration = it }
                                 )
@@ -402,7 +406,7 @@ fun TeslaLayout() {
                     savedObdMacAddress = newMac
                     sharedPrefs.edit().putString("obd_mac", newMac).apply()
                 },
-                currentRouteGeoJson = routeGeoJson // 🌟 PŘEDÁVÁME TRASU DO NASTAVENÍ PRO STAŽENÍ
+                currentRouteGeoJson = routeGeoJson
             )
         }
 
@@ -414,7 +418,7 @@ fun TeslaLayout() {
         if (isNightPanel) {
             BackHandler { isNightPanel = false }
             Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                NightPanelScreen(speed = finalSpeed, rpm = carStateSnapshot.rpm, error = carStateSnapshot.error, instruction = currentInstruction, onExit = { isNightPanel = false })
+                NightPanelScreen(speed = effectiveSpeed, rpm = carStateSnapshot.rpm, error = carStateSnapshot.error, instruction = currentInstruction, onExit = { isNightPanel = false })
             }
         }
     }
@@ -460,12 +464,6 @@ fun Viewport(
     var suggestions by remember { mutableStateOf<List<SearchSuggestion>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
-
-    LaunchedEffect(instruction) {
-        if (instruction == null) {
-            onRouteGeoJsonUpdated(null)
-        }
-    }
 
     LaunchedEffect(is3dModeExternal) {
         if (is3dModeExternal) mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().pitch(60.0).zoom(16.0).bearing(FollowPuckViewportStateBearing.SyncWithLocationPuck).build())
@@ -557,12 +555,6 @@ fun GoogleViewport(
     val scope = rememberCoroutineScope()
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
     val cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(LatLng(50.0755, 14.4378), 13f) }
-
-    LaunchedEffect(instruction) {
-        if (instruction == null) {
-            onRouteGeoJsonUpdated(null)
-        }
-    }
 
     LaunchedEffect(currentLocation, is3dModeExternal) {
         if (is3dModeExternal && currentLocation != null) {
