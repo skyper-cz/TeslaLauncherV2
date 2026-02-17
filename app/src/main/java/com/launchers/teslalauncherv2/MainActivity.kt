@@ -100,6 +100,10 @@ fun TeslaLayout() {
     var navInstructionsList by remember { mutableStateOf<List<NavInstruction>>(emptyList()) }
     var currentInstructionIndex by remember { mutableIntStateOf(0) }
     var currentManeuverDistance by remember { mutableStateOf<Int?>(null) }
+
+    // 🌟 FIX PRO VYSOKÉ RYCHLOSTI:
+    var lastMinDistance by remember { mutableStateOf(Double.MAX_VALUE) }
+
     val currentInstruction = navInstructionsList.getOrNull(currentInstructionIndex)
 
     var currentRouteDuration by remember { mutableStateOf<Int?>(null) }
@@ -228,16 +232,22 @@ fun TeslaLayout() {
                     }
                     val dist = location.distanceTo(target).toInt()
 
-                    if (dist < 30) {
+                    // 🌟 OPRAVENÁ LOGIKA PRO VYSOKÉ RYCHLOSTI
+                    if (dist < 30 || (dist > lastMinDistance && lastMinDistance < 150)) {
                         if (currentInstructionIndex < navInstructionsList.size - 1) {
                             currentInstructionIndex++
+                            lastMinDistance = Double.MAX_VALUE
                         } else {
                             navInstructionsList = emptyList()
                             routeGeoJson = null
                             currentManeuverDistance = null
                             currentRouteDuration = null
+                            lastMinDistance = Double.MAX_VALUE
                         }
                     } else {
+                        if (dist < lastMinDistance) {
+                            lastMinDistance = dist.toDouble()
+                        }
                         currentManeuverDistance = dist
                     }
                 }
@@ -250,12 +260,7 @@ fun TeslaLayout() {
         if (isLocationPermissionGranted) {
             try {
                 gpsStatus = "SEARCHING..."
-                if (locationManager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
-                    locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, listener)
-                }
-                if (locationManager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
-                    locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 1f, listener)
-                }
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, listener)
             } catch (e: Exception) {
                 gpsStatus = "ERR GPS"
             }
@@ -269,7 +274,6 @@ fun TeslaLayout() {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (isLandscape) {
             Row(modifier = Modifier.fillMaxSize()) {
-
                 Column(modifier = Modifier.fillMaxWidth(0.32f).fillMaxHeight()) {
                     InstrumentClusterWrapper(
                         modifier = Modifier.weight(0.60f),
@@ -296,8 +300,8 @@ fun TeslaLayout() {
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     if (currentGear != "R") {
                         when (currentMapEngine) {
-                            "MAPBOX" -> Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0 }, onRouteDurationUpdated = { currentRouteDuration = it })
-                            "GOOGLE" -> GoogleViewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0 }, onRouteDurationUpdated = { currentRouteDuration = it })
+                            "MAPBOX" -> Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
+                            "GOOGLE" -> GoogleViewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
                         }
                     } else {
                         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -321,8 +325,8 @@ fun TeslaLayout() {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     if (currentGear != "R") {
                         when (currentMapEngine) {
-                            "MAPBOX" -> Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0 }, onRouteDurationUpdated = { currentRouteDuration = it })
-                            "GOOGLE" -> GoogleViewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0 }, onRouteDurationUpdated = { currentRouteDuration = it })
+                            "MAPBOX" -> Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
+                            "GOOGLE" -> GoogleViewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
                         }
                     } else {
                         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -368,7 +372,7 @@ fun TeslaLayout() {
                     rpm = carStateSnapshot.rpm,
                     error = carStateSnapshot.error,
                     instruction = currentInstruction,
-                    currentNavDistance = currentManeuverDistance, // 🌟 OPRAVA: Konečně sem tečou reálné metry!
+                    currentNavDistance = currentManeuverDistance,
                     onExit = { isNightPanel = false }
                 )
             }
