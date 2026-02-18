@@ -1,8 +1,10 @@
 package com.launchers.teslalauncherv2.data
 
+import com.mapbox.geojson.FeatureCollection
 import com.mapbox.geojson.Geometry
 import com.mapbox.geojson.Point
 import com.mapbox.geojson.Polygon
+import com.mapbox.turf.TurfMeasurement // 🌟 PŘIDÁNO: Nutné pro výpočet trasy
 
 // Helper: Converts min/max bounding coordinates into a Mapbox-compatible Polygon
 fun createBBoxGeometry(minLng: Double, minLat: Double, maxLng: Double, maxLat: Double): Geometry {
@@ -27,6 +29,28 @@ fun createBoundingBoxAround(lat: Double, lng: Double, radiusKm: Double): Geometr
     val maxLng = lng + lngOffset
 
     return createBBoxGeometry(minLng, minLat, maxLng, maxLat)
+}
+
+// 🌟 NOVÁ FUNKCE: Vypočítá obálku (Bounding Box) okolo celé trasy z GeoJSONu
+fun getRouteBoundingBox(routeGeoJson: String): Geometry? {
+    return try {
+        val featureCollection = FeatureCollection.fromJson(routeGeoJson)
+        val bbox = TurfMeasurement.bbox(featureCollection)
+        // bbox vrací pole: [minLon, minLat, maxLon, maxLat]
+
+        // Přidáme malý buffer (okraj), aby se nestáhla jen tenká čára, ale i okolí trasy
+        val buffer = 0.05 // cca 5 km rezerva
+
+        createBBoxGeometry(
+            bbox[0] - buffer,
+            bbox[1] - buffer,
+            bbox[2] + buffer,
+            bbox[3] + buffer
+        )
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
 }
 
 // Data structures defining the hierarchy of available offline map downloads

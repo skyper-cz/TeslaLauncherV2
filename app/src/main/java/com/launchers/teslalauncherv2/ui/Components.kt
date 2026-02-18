@@ -55,6 +55,7 @@ import androidx.compose.ui.window.Popup
 import androidx.core.app.NotificationManagerCompat
 import com.launchers.teslalauncherv2.data.CarState
 import com.launchers.teslalauncherv2.data.NavInstruction
+import com.launchers.teslalauncherv2.data.createBBoxGeometry
 import com.launchers.teslalauncherv2.media.MediaManager
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -94,7 +95,7 @@ fun getRouteBoundingBox(routeGeoJson: String, bufferDegrees: Double = 0.05): com
             if (p.longitude() > maxLng) maxLng = p.longitude()
         }
 
-        return com.launchers.teslalauncherv2.data.createBBoxGeometry(
+        return createBBoxGeometry(
             minLng - bufferDegrees, minLat - bufferDegrees,
             maxLng + bufferDegrees, maxLat + bufferDegrees
         )

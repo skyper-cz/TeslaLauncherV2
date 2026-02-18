@@ -222,7 +222,15 @@ fun SettingsScreen(
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { downloadMenuLevel-- }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.Cyan)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "BACK", color = Color.Cyan, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = when (downloadMenuLevel) {
+                                1 -> "CONTINENTS"
+                                2 -> selectedContinent?.name?.uppercase() ?: ""
+                                3 -> selectedCountry?.name?.uppercase() ?: ""
+                                else -> "BACK"
+                            },
+                            color = Color.Cyan, fontSize = 20.sp, fontWeight = FontWeight.Bold
+                        )
                     }
                 } else {
                     Text("SYSTEM SETTINGS", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
@@ -231,9 +239,10 @@ fun SettingsScreen(
             }
             HorizontalDivider(color = Color.DarkGray)
 
+            // --- MAIN MENU (LEVEL 0) ---
             if (downloadMenuLevel == 0) {
 
-                // --- SECTION 1: VEHICLE & CONNECTION ---
+                // 1. VEHICLE & CONNECTION
                 Text("VEHICLE & CONNECTION", color = Color.Cyan, fontSize = 14.sp, fontWeight = FontWeight.Bold)
 
                 // OBD Configuration
@@ -278,12 +287,12 @@ fun SettingsScreen(
                     Switch(checked = isSpeedLimitEnabled, onCheckedChange = {
                         isSpeedLimitEnabled = it
                         context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("show_speed_limit", it).apply()
-                    })
+                    }, colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan, checkedTrackColor = Color(0xFF004444)))
                 }
 
                 HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 8.dp))
 
-                // --- SECTION 2: MAP & NAVIGATION ---
+                // 2. MAP & NAVIGATION
                 Text("MAP & NAVIGATION", color = Color.Cyan, fontSize = 14.sp, fontWeight = FontWeight.Bold)
 
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -296,45 +305,189 @@ fun SettingsScreen(
 
                 HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 8.dp))
 
-                // --- SECTION 3: OFFLINE STORAGE ---
+                // 3. OFFLINE STORAGE
                 Text("OFFLINE STORAGE", color = Color.Cyan, fontSize = 14.sp, fontWeight = FontWeight.Bold)
 
                 // Current Route Download
                 val currentSavedRouteEntry = savedRoutes.firstOrNull { it.startsWith("active_route|") }
                 val isRouteDownloaded = currentSavedRouteEntry != null
                 if (currentRouteGeoJson != null || isRouteDownloaded) {
-                    Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF112233), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+
+                    // Logic for Route Downloading
+                    var isDownloadingRoute by remember { mutableStateOf(false) }
+                    var routeDownloadProgress by remember { mutableIntStateOf(0) }
+
+                    Row(modifier = Modifier.fillMaxWidth().background(if(isRouteDownloaded) Color(0xFF003300) else Color(0xFF112233), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text("Current Route Data", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                            Text(if (isRouteDownloaded) "Cached for 30 days ✓" else "Available for offline use", color = if (isRouteDownloaded) Color.Green else Color.Gray, fontSize = 12.sp)
+
+                            if (isDownloadingRoute) {
+                                LinearProgressIndicator(progress = { routeDownloadProgress / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), color = Color.Cyan, trackColor = Color.DarkGray)
+                            } else {
+                                Text(if (isRouteDownloaded) "Cached for 30 days ✓" else "Available for offline use", color = if (isRouteDownloaded) Color.Green else Color.Gray, fontSize = 12.sp)
+                            }
                         }
-                        if (isRouteDownloaded) {
-                            IconButton(onClick = { /* Delete logic */ }) { Icon(Icons.Default.Delete, null, tint = Color.Red) }
-                        } else {
-                            IconButton(onClick = { /* Download logic */ }) { Icon(Icons.Default.Download, null, tint = Color.Cyan) }
+
+                        if (isDownloadingRoute) {
+                            Text("$routeDownloadProgress %", color = Color.White)
+                        } else if (isRouteDownloaded) {
+                            IconButton(onClick = {
+                                try { OfflineMapManager.deleteRegion("active_route") } catch (e: Exception) {}
+                                val newSet = savedRoutes.toMutableSet().apply { remove(currentSavedRouteEntry) }
+                                prefs.edit().putStringSet("saved_routes", newSet).apply()
+                                savedRoutes = newSet
+                            }) { Icon(Icons.Default.Delete, null, tint = Color.Red) }
+                        } else if (currentRouteGeoJson != null) {
+                            IconButton(onClick = {
+                                // 🌟 OPRAVA: PŘEKLEP BYL ZDE (getRouteBoundingBox)
+                                val routeGeometry = getRouteBoundingBox(currentRouteGeoJson)
+                                if (routeGeometry != null) {
+                                    isDownloadingRoute = true
+                                    OfflineMapManager.downloadRegion(context, "active_route", routeGeometry, { p -> routeDownloadProgress = p }, {
+                                        isDownloadingRoute = false
+                                        val newSet = savedRoutes.toMutableSet().apply { removeIf { it.startsWith("active_route|") }; add("active_route|${System.currentTimeMillis()}") }
+                                        prefs.edit().putStringSet("saved_routes", newSet).apply()
+                                        savedRoutes = newSet
+                                    }, { isDownloadingRoute = false })
+                                }
+                            }) { Icon(Icons.Default.Download, null, tint = Color.Cyan) }
                         }
                     }
+                    Spacer(modifier = Modifier.height(12.dp))
                 }
 
                 // Smart Region (Surroundings)
                 val isAutoDownloaded = downloadedRegions.contains("auto_region")
+                val isAutoDownloading = downloadingRegionId == "auto_region"
+
                 Row(modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(12.dp)).padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Smart Region: $currentLocationName", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        Text(if (isAutoDownloaded) "Offline data ready" else "Approx. 100km radius", color = if (isAutoDownloaded) Color.Green else Color.Gray, fontSize = 12.sp)
+                        if (isAutoDownloading) {
+                            LinearProgressIndicator(progress = { downloadProgress / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), color = Color.Cyan, trackColor = Color.DarkGray)
+                        } else {
+                            Text(if (isAutoDownloaded) "Offline data ready" else "Approx. 100km radius", color = if (isAutoDownloaded) Color.Green else Color.Gray, fontSize = 12.sp)
+                        }
                     }
-                    IconButton(onClick = { /* Auto download logic */ }) {
-                        Icon(if (isAutoDownloaded) Icons.Default.CheckCircle else Icons.Default.CloudDownload, null, tint = if (isAutoDownloaded) Color.Green else Color.White)
+
+                    if (isAutoDownloading) {
+                        Text("$downloadProgress %", color = Color.White)
+                    } else if (isAutoDownloaded) {
+                        IconButton(onClick = {
+                            OfflineMapManager.deleteRegion("auto_region")
+                            val newSet = downloadedRegions.toMutableSet().apply { remove("auto_region") }
+                            prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                            downloadedRegions = newSet
+                        }) { Icon(Icons.Default.Delete, null, tint = Color.Red) }
+                    } else if (currentLocation != null) {
+                        IconButton(onClick = {
+                            downloadingRegionId = "auto_region"
+                            val geo = createBoundingBoxAround(currentLocation.latitude, currentLocation.longitude, 50.0)
+                            OfflineMapManager.downloadRegion(context, "auto_region", geo, { downloadProgress = it }, {
+                                downloadingRegionId = null
+                                val newSet = downloadedRegions.toMutableSet().apply { add("auto_region") }
+                                prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                                downloadedRegions = newSet
+                            }, { downloadingRegionId = null })
+                        }) { Icon(Icons.Default.CloudDownload, null, tint = Color.White) }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // Manual Regions Button
                 Button(onClick = { downloadMenuLevel = 1 }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333)), modifier = Modifier.fillMaxWidth().height(50.dp)) {
                     Icon(Icons.Default.Language, null); Spacer(modifier = Modifier.width(8.dp)); Text("BROWSE ALL REGIONS")
                 }
+            }
 
-            } else {
-                // ... (Logic for levels 1, 2, 3 stays the same as before) ...
+            // --- LEVEL 1: CONTINENTS ---
+            else if (downloadMenuLevel == 1) {
+                OfflineRegionsDatabase.continents.forEach { continent ->
+                    Button(
+                        onClick = { selectedContinent = continent; downloadMenuLevel = 2 },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A)),
+                        modifier = Modifier.fillMaxWidth().height(60.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(continent.name, color = Color.White, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.Gray)
+                    }
+                }
+            }
+
+            // --- LEVEL 2: COUNTRIES ---
+            else if (downloadMenuLevel == 2) {
+                selectedContinent?.countries?.forEach { country ->
+                    Button(
+                        onClick = { selectedCountry = country; downloadMenuLevel = 3 },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2A2A2A)),
+                        modifier = Modifier.fillMaxWidth().height(60.dp),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text(country.name, color = Color.White, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                        Icon(Icons.AutoMirrored.Filled.ArrowForward, null, tint = Color.Gray)
+                    }
+                }
+            }
+
+            // --- LEVEL 3: REGIONS (Specific Downloadable Areas) ---
+            else if (downloadMenuLevel == 3) {
+                selectedCountry?.regions?.forEach { region ->
+                    val isDownloaded = downloadedRegions.contains(region.id)
+                    val isThisDownloading = downloadingRegionId == region.id
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .background(if (isDownloaded) Color(0xFF003300) else Color(0xFF2A2A2A), RoundedCornerShape(12.dp))
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(region.name, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text(if (isDownloaded) "Installed ✓" else region.sizeMb, color = if (isDownloaded) Color.Green else Color.Gray, fontSize = 14.sp)
+
+                            if (isThisDownloading) {
+                                LinearProgressIndicator(progress = { downloadProgress / 100f }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), color = Color.Cyan, trackColor = Color.DarkGray)
+                            }
+                        }
+
+                        if (isThisDownloading) {
+                            Text("$downloadProgress %", color = Color.White, fontWeight = FontWeight.Bold)
+                        } else if (isDownloaded) {
+                            IconButton(
+                                onClick = {
+                                    OfflineMapManager.deleteRegion(region.id)
+                                    val newSet = downloadedRegions.toMutableSet().apply { remove(region.id) }
+                                    prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                                    downloadedRegions = newSet
+                                    Toast.makeText(context, "Deleted", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.background(Color(0xFF550000), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.Delete, "Delete", tint = Color.White) }
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    downloadingRegionId = region.id
+                                    downloadProgress = 0
+                                    OfflineMapManager.downloadRegion(
+                                        context = context, regionId = region.id, geometry = region.geometry,
+                                        onProgress = { downloadProgress = it },
+                                        onComplete = {
+                                            downloadingRegionId = null
+                                            val newSet = downloadedRegions.toMutableSet().apply { add(region.id) }
+                                            prefs.edit().putStringSet("downloaded_ids", newSet).apply()
+                                            downloadedRegions = newSet
+                                            Toast.makeText(context, "Downloaded!", Toast.LENGTH_LONG).show()
+                                        },
+                                        onError = { downloadingRegionId = null; Toast.makeText(context, "Error", Toast.LENGTH_SHORT).show() }
+                                    )
+                                },
+                                modifier = Modifier.background(Color(0xFF444444), RoundedCornerShape(50))
+                            ) { Icon(Icons.Default.CloudDownload, "Download", tint = Color.White) }
+                        }
+                    }
+                }
             }
         }
     }
