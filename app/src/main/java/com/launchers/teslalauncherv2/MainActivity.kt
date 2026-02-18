@@ -11,6 +11,7 @@ import android.location.LocationManager
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -30,6 +31,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -43,6 +45,9 @@ import kotlinx.coroutines.flow.StateFlow
 import com.launchers.teslalauncherv2.ui.*
 import com.launchers.teslalauncherv2.data.CarState
 import com.launchers.teslalauncherv2.data.NavInstruction
+import com.launchers.teslalauncherv2.data.AppManager
+import com.launchers.teslalauncherv2.data.DTCManager
+import com.launchers.teslalauncherv2.map.OfflineMapManager
 import com.launchers.teslalauncherv2.obd.ObdDataManager
 import com.launchers.teslalauncherv2.hardware.ReverseCameraScreen
 
@@ -108,25 +113,26 @@ fun TeslaLayout() {
     // 🌟 HIGH-SPEED FIX: Tracks closest distance to the next node
     var lastMinDistance by remember { mutableStateOf(Double.MAX_VALUE) }
 
+    // 🌟 NEW: Speed Limit Logic
+    var speedLimitsList by remember { mutableStateOf<List<Int?>>(emptyList()) }
+    var currentSpeedLimit by remember { mutableStateOf<Int?>(null) }
+
     val currentInstruction = navInstructionsList.getOrNull(currentInstructionIndex)
 
     var currentRouteDuration by remember { mutableStateOf<Int?>(null) }
     var routeGeoJson by rememberSaveable { mutableStateOf<String?>(null) }
     var currentSpeedGps by remember { mutableIntStateOf(0) }
 
-    // 🌟 NEW: Speed limit logic
-    var currentSpeedLimit by remember { mutableStateOf<Int?>(null) }
-
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var currentGpsLocation by remember { mutableStateOf<Location?>(null) }
 
     // SharedPreferences for saving user settings
     val sharedPrefs = remember { context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE) }
-    var savedObdMacAddress by remember { mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "00:10:CC:4F:36:03") }
+    var savedObdMacAddress by remember { mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "") }
     var currentMapEngine by remember { mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX") }
     var currentSearchEngine by remember { mutableStateOf(sharedPrefs.getString("search_engine", "MAPBOX") ?: "MAPBOX") }
 
-    // 🌟 NEW: Check user setting for speed limits
+    // 🌟 NEW: User setting to show/hide speed limits
     var showSpeedLimitSetting by remember { mutableStateOf(sharedPrefs.getBoolean("show_speed_limit", true)) }
 
     // UI state toggles
@@ -164,7 +170,6 @@ fun TeslaLayout() {
         while (navInstructionsList.isNotEmpty() && currentRouteDuration != null) {
             delay(1000) // Tick every second
             // If moving (over 3 km/h), decrease the remaining time.
-            // If stuck in traffic (stopped), duration stays constant -> ETA time naturally pushes later.
             if (effectiveSpeed > 3) {
                 currentRouteDuration = (currentRouteDuration!! - 1).coerceAtLeast(0)
             }
@@ -193,7 +198,7 @@ fun TeslaLayout() {
         } else currentGear = gear
     }
 
-    // Permission launchers for location and Bluetooth
+    // Permission launchers
     val locationPermissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions(), onResult = { permissions ->
         val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) { isLocationPermissionGranted = true; gpsStatus = "READY" } else { gpsStatus = "NO PERM" }
@@ -226,7 +231,7 @@ fun TeslaLayout() {
             if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
         }
 
-        launch(Dispatchers.IO) { com.launchers.teslalauncherv2.data.AppManager.prefetchApps(context) }
+        launch(Dispatchers.IO) { AppManager.prefetchApps(context) }
 
         // Cleanup expired offline map routes
         launch(Dispatchers.IO) {
@@ -243,7 +248,7 @@ fun TeslaLayout() {
                     val id = parts[0]
                     val timestamp = parts[1].toLongOrNull() ?: 0L
                     if (now - timestamp > thirtyDaysInMillis) {
-                        try { com.launchers.teslalauncherv2.map.OfflineMapManager.deleteRegion(id) } catch (e: Exception) { }
+                        try { OfflineMapManager.deleteRegion(id) } catch (e: Exception) { }
                         changed = true
                     } else {
                         validRoutes.add(routeData)
@@ -257,7 +262,7 @@ fun TeslaLayout() {
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
 
-    // Manage LocationListener using DisposableEffect to prevent leaks
+    // Manage LocationListener using DisposableEffect
     DisposableEffect(isLocationPermissionGranted, currentInstruction) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val listener = object : LocationListener {
@@ -275,17 +280,25 @@ fun TeslaLayout() {
                     val dist = location.distanceTo(target).toInt()
 
                     // 🌟 FIXED HIGH-SPEED LOGIC: Node is considered passed if within 30m,
-                    // or if it was within 150m and the distance is now increasing.
+                    // or if it was within 150m and the distance is now increasing (overshoot).
                     if (dist < 30 || (dist > lastMinDistance && lastMinDistance < 150)) {
                         if (currentInstructionIndex < navInstructionsList.size - 1) {
                             currentInstructionIndex++
                             lastMinDistance = Double.MAX_VALUE // Reset for the next node
+
+                            // 🌟 UPDATE SPEED LIMIT for new segment
+                            currentSpeedLimit = speedLimitsList.getOrNull(currentInstructionIndex)
+
                         } else {
+                            // Route Finished
                             navInstructionsList = emptyList()
                             routeGeoJson = null
                             currentManeuverDistance = null
                             currentRouteDuration = null
+                            speedLimitsList = emptyList()
+                            currentSpeedLimit = null
                             lastMinDistance = Double.MAX_VALUE
+                            Toast.makeText(context, "You have arrived!", Toast.LENGTH_LONG).show()
                         }
                     } else {
                         if (dist < lastMinDistance) {
@@ -314,7 +327,10 @@ fun TeslaLayout() {
         }
     }
 
+    // 🌟 MAIN UI LAYOUT
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+
+        // 🌟 1. LAYOUT CONTENT
         if (isLandscape) {
             Row(modifier = Modifier.fillMaxSize()) {
                 // Left Panel in Landscape
@@ -325,9 +341,9 @@ fun TeslaLayout() {
                         carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
                         instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
                         gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
-                        speedLimit = currentSpeedLimit, // 🌟 ADDED HERE
-                        showSpeedLimit = showSpeedLimitSetting, // 🌟 NEW SETTING
-                        onCancelRoute = { navInstructionsList = emptyList(); currentRouteDuration = null; routeGeoJson = null }
+                        speedLimit = currentSpeedLimit, // 🌟 Passing the limit
+                        showSpeedLimit = showSpeedLimitSetting, // 🌟 Passing user preference
+                        onCancelRoute = { navInstructionsList = emptyList(); currentRouteDuration = null; routeGeoJson = null; speedLimitsList = emptyList(); currentSpeedLimit = null }
                     )
                     HorizontalDivider(color = Color.DarkGray, thickness = 1.dp)
                     Dock(
@@ -348,8 +364,24 @@ fun TeslaLayout() {
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     if (currentGear != "R") {
                         when (currentMapEngine) {
-                            "MAPBOX" -> Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
-                            "GOOGLE" -> GoogleViewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
+                            "MAPBOX" -> Viewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = { routeGeoJson = it },
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it },
+                                // 🌟 NEW: Speed limits from NetworkManager
+                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits; currentSpeedLimit = limits.firstOrNull() }
+                            )
+                            "GOOGLE" -> GoogleViewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = { routeGeoJson = it },
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it },
+                                // 🌟 NEW: Speed limits from NetworkManager (Google usually returns empty)
+                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits; currentSpeedLimit = limits.firstOrNull() }
+                            )
                         }
                     } else {
                         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -368,16 +400,30 @@ fun TeslaLayout() {
                     carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
                     instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
                     gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
-                    speedLimit = currentSpeedLimit, // 🌟 AND ADDED HERE
-                    showSpeedLimit = showSpeedLimitSetting, // 🌟 NEW SETTING
-                    onCancelRoute = { navInstructionsList = emptyList(); currentRouteDuration = null; routeGeoJson = null }
+                    speedLimit = currentSpeedLimit,
+                    showSpeedLimit = showSpeedLimitSetting,
+                    onCancelRoute = { navInstructionsList = emptyList(); currentRouteDuration = null; routeGeoJson = null; speedLimitsList = emptyList(); currentSpeedLimit = null }
                 )
 
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                     if (currentGear != "R") {
                         when (currentMapEngine) {
-                            "MAPBOX" -> Viewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
-                            "GOOGLE" -> GoogleViewport(modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson, onRouteGeoJsonUpdated = { routeGeoJson = it }, onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }, onRouteDurationUpdated = { currentRouteDuration = it })
+                            "MAPBOX" -> Viewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = { routeGeoJson = it },
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it },
+                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits; currentSpeedLimit = limits.firstOrNull() }
+                            )
+                            "GOOGLE" -> GoogleViewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = { routeGeoJson = it },
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it },
+                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits; currentSpeedLimit = limits.firstOrNull() }
+                            )
                         }
                     } else {
                         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -405,10 +451,25 @@ fun TeslaLayout() {
             }
         }
 
-        // Overlay Screens
+        // 🌟 2. GLOBAL OVERLAYS (Errors, Settings, Night Panel)
+
+        // INTELLIGENT ERROR ALERT (Always on top)
+        if (!carStateSnapshot.error.isNullOrEmpty()) {
+            TeslaErrorAlert(errorCode = carStateSnapshot.error) {
+                // Logic to dismiss/clear error could go here
+            }
+        }
+
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }
-            SettingsScreen(onClose = { isSettingsOpen = false }, currentMapEngine = currentMapEngine, onMapEngineChange = { newEngine -> currentMapEngine = newEngine; sharedPrefs.edit().putString("map_engine", newEngine).apply() }, currentSearchEngine = currentSearchEngine, onSearchEngineChange = { newEngine -> currentSearchEngine = newEngine; sharedPrefs.edit().putString("search_engine", newEngine).apply() }, currentLocation = currentGpsLocation, currentObdMac = savedObdMacAddress, onObdMacChange = { newMac -> savedObdMacAddress = newMac; sharedPrefs.edit().putString("obd_mac", newMac).apply() }, currentRouteGeoJson = routeGeoJson)
+            SettingsScreen(
+                onClose = { isSettingsOpen = false },
+                currentMapEngine = currentMapEngine, onMapEngineChange = { newEngine -> currentMapEngine = newEngine; sharedPrefs.edit().putString("map_engine", newEngine).apply() },
+                currentSearchEngine = currentSearchEngine, onSearchEngineChange = { newEngine -> currentSearchEngine = newEngine; sharedPrefs.edit().putString("search_engine", newEngine).apply() },
+                currentLocation = currentGpsLocation,
+                currentObdMac = savedObdMacAddress, onObdMacChange = { newMac -> savedObdMacAddress = newMac; sharedPrefs.edit().putString("obd_mac", newMac).apply() },
+                currentRouteGeoJson = routeGeoJson
+            )
         }
 
         if (isAppDrawerOpen) {
@@ -418,16 +479,14 @@ fun TeslaLayout() {
 
         if (isNightPanel) {
             BackHandler { isNightPanel = false }
-            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                NightPanelScreen(
-                    speed = effectiveSpeed,
-                    rpm = carStateSnapshot.rpm,
-                    error = carStateSnapshot.error,
-                    instruction = currentInstruction,
-                    currentNavDistance = currentManeuverDistance,
-                    onExit = { isNightPanel = false }
-                )
-            }
+            NightPanelScreen(
+                speed = effectiveSpeed,
+                rpm = carStateSnapshot.rpm,
+                error = carStateSnapshot.error,
+                instruction = currentInstruction,
+                currentNavDistance = currentManeuverDistance,
+                onExit = { isNightPanel = false }
+            )
         }
     }
 }
