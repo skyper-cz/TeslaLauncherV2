@@ -28,11 +28,11 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.launchers.teslalauncherv2.hardware.CustomUSBMonitor
 import com.serenegiant.usb.USBMonitor
 import com.serenegiant.usb.UVCCamera
 import com.serenegiant.usb.widget.UVCCameraTextureView
 
+// Fullscreen layout invoked when the vehicle shifts into Reverse (R)
 @Composable
 fun ReverseCameraScreen() {
     var refreshTrigger by remember { mutableIntStateOf(0) }
@@ -42,6 +42,7 @@ fun ReverseCameraScreen() {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         USBCameraView(refreshTrigger = refreshTrigger, onStatusChange = { running, msg -> isRunning = running; statusMessage = msg })
 
+        // Shows connection status and retry button if feed fails
         if (!isRunning) {
             Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(text = statusMessage, color = if (statusMessage.contains("Error") || statusMessage.contains("DENIED")) Color.Red else Color.Gray, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -55,6 +56,7 @@ fun ReverseCameraScreen() {
     }
 }
 
+// Low-level component bridging libuvc hardware rendering with Jetpack Compose
 @Composable
 fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit) {
     val context = LocalContext.current
@@ -64,22 +66,19 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
     var mPreviewSurface by remember { mutableStateOf<SurfaceTexture?>(null) }
     var hasRequestedPermission by remember { mutableStateOf(false) }
 
-    // --- BEZPEČNÉ UVOLNĚNÍ KAMERY ---
+    // --- SAFE CAMERA TEARDOWN ---
+    // Critical to prevent native C++ crashes within libuvc when hardware drops out
     fun releaseCamera() {
         try {
             mUVCCamera?.stopPreview()
-        } catch (e: Exception) {
-            // Ignorujeme chybu při zastavování preview (pokud je zařízení pryč, hodí to chybu)
-        }
+        } catch (e: Exception) {} // Ignore crashes if device abruptly disconnected
         try {
             mUVCCamera?.close()
-        } catch (e: Exception) {
-            // Ignorujeme chybu při zavírání
-        }
+        } catch (e: Exception) {}
         mUVCCamera = null
     }
 
-    // Funkce pro bezpečné spuštění náhledu
+    // Connects the initialized camera hardware to the Android SurfaceTexture
     fun startPreviewSafely() {
         val camera = mUVCCamera
         val surface = mPreviewSurface
@@ -91,7 +90,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
             } catch (e: Exception) {
                 Log.e("CameraUtils", "Preview Failed: ${e.message}")
                 onStatusChange(false, "Preview Error")
-                releaseCamera() // Pokud nejde spustit preview, raději hned uklidíme
+                releaseCamera() // Clean up immediately on failure
             }
         }
     }
@@ -108,6 +107,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
                 val camera = UVCCamera()
                 try {
                     camera.open(ctrlBlock)
+                    // Attempt HD resolution, fallback to SD if unsupported
                     try { camera.setPreviewSize(1280, 720, UVCCamera.FRAME_FORMAT_MJPEG) } catch (_: Exception) {
                         try { camera.setPreviewSize(640, 480, UVCCamera.FRAME_FORMAT_MJPEG) } catch (_: Exception) {}
                     }
@@ -120,14 +120,12 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
             }
 
             override fun onDisconnect(device: UsbDevice?, ctrlBlock: USBMonitor.UsbControlBlock?) {
-                // Tady to často padá - musíme být opatrní
                 releaseCamera()
                 onStatusChange(false, "DISCONNECTED")
                 hasRequestedPermission = false
             }
 
             override fun onDettach(device: UsbDevice?) {
-                // Fyzické odpojení - také voláme release
                 releaseCamera()
                 onStatusChange(false, "USB REMOVED")
                 hasRequestedPermission = false
@@ -140,7 +138,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
         })
     }
 
-    // Kontrola při návratu do aplikace (pro Sony workaround)
+    // Workaround for specific head units: Verify USB connection on app resume
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -164,7 +162,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Inicializace
+    // Initial hardware scan and permission request trigger
     LaunchedEffect(refreshTrigger) {
         try {
             if (!usbMonitor.isRegistered()) usbMonitor.register()
@@ -187,7 +185,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
         }
     }
 
-    // Úklid při zahození obrazovky
+    // Disconnect resources when navigating away from the reverse view
     DisposableEffect(Unit) {
         onDispose {
             releaseCamera()
@@ -195,6 +193,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
         }
     }
 
+    // Renders the actual raw video feed inside Compose via AndroidView
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
             factory = { ctx ->
@@ -220,6 +219,7 @@ fun USBCameraView(refreshTrigger: Int, onStatusChange: (Boolean, String) -> Unit
     }
 }
 
+// Draws static distance markers (Red, Yellow, Green) over the camera feed
 @Composable
 fun GuideLinesOverlay() {
     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -227,6 +227,7 @@ fun GuideLinesOverlay() {
         val bottomWidth = w * 0.6f; val topWidth = w * 0.4f; val endY = h * 0.3f
         val leftStart = (w - bottomWidth) / 2; val rightStart = leftStart + bottomWidth
         val leftEnd = (w - topWidth) / 2; val rightEnd = leftEnd + topWidth
+
         fun drawZone(y1: Float, y2: Float, color: Color) {
             val path = Path().apply {
                 val f1 = (h - y1) / (h - endY); val f2 = (h - y2) / (h - endY)
@@ -236,6 +237,9 @@ fun GuideLinesOverlay() {
             }
             drawPath(path, color, style = Stroke(width = 5.dp.toPx()))
         }
-        drawZone(h, h * 0.85f, Color.Red); drawZone(h * 0.85f, h * 0.65f, Color.Yellow); drawZone(h * 0.65f, endY, Color.Green)
+
+        drawZone(h, h * 0.85f, Color.Red)
+        drawZone(h * 0.85f, h * 0.65f, Color.Yellow)
+        drawZone(h * 0.65f, endY, Color.Green)
     }
 }

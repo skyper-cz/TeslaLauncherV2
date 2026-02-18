@@ -39,7 +39,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.StateFlow
 
-// Naše vlastní UI komponenty z jiných souborů
+// Custom UI components from other files
 import com.launchers.teslalauncherv2.ui.*
 import com.launchers.teslalauncherv2.data.CarState
 import com.launchers.teslalauncherv2.data.NavInstruction
@@ -50,12 +50,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        hideSystemUI()
+        hideSystemUI() // Start with immersive mode
 
         setContent {
             TeslaLauncherTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    TeslaLayout()
+                    TeslaLayout() // Main layout entry point
                 }
             }
         }
@@ -63,9 +63,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        hideSystemUI()
+        hideSystemUI() // Ensure immersive mode is active upon resume
     }
 
+    // Configures the window to hide system bars and allow swipe to reveal
     private fun hideSystemUI() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).let { controller ->
@@ -76,12 +77,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        ObdDataManager.stop()
-        android.os.Process.killProcess(android.os.Process.myPid())
+        ObdDataManager.stop() // Clean up OBD resources
+        android.os.Process.killProcess(android.os.Process.myPid()) // Force close application
         System.exit(0)
     }
 }
 
+// Defines the custom dark theme for the launcher
 @Composable
 fun TeslaLauncherTheme(content: @Composable () -> Unit) {
     val darkColorScheme = darkColorScheme(background = Color.Black, surface = Color.Black, onBackground = Color.White, onSurface = Color.White)
@@ -94,14 +96,16 @@ fun TeslaLayout() {
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
+    // Observe car state (speed, RPM, etc.) from OBD manager
     val carStateFlow = ObdDataManager.carState
     val carStateSnapshot by carStateFlow.collectAsState()
 
+    // Navigation state variables
     var navInstructionsList by remember { mutableStateOf<List<NavInstruction>>(emptyList()) }
     var currentInstructionIndex by remember { mutableIntStateOf(0) }
     var currentManeuverDistance by remember { mutableStateOf<Int?>(null) }
 
-    // 🌟 FIX PRO VYSOKÉ RYCHLOSTI:
+    // 🌟 HIGH-SPEED FIX: Tracks closest distance to the next node
     var lastMinDistance by remember { mutableStateOf(Double.MAX_VALUE) }
 
     val currentInstruction = navInstructionsList.getOrNull(currentInstructionIndex)
@@ -109,18 +113,28 @@ fun TeslaLayout() {
     var currentRouteDuration by remember { mutableStateOf<Int?>(null) }
     var routeGeoJson by rememberSaveable { mutableStateOf<String?>(null) }
     var currentSpeedGps by remember { mutableIntStateOf(0) }
+
+    // 🌟 NEW: Speed limit logic
+    var currentSpeedLimit by remember { mutableStateOf<Int?>(null) }
+
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var currentGpsLocation by remember { mutableStateOf<Location?>(null) }
 
+    // SharedPreferences for saving user settings
     val sharedPrefs = remember { context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE) }
     var savedObdMacAddress by remember { mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "00:10:CC:4F:36:03") }
     var currentMapEngine by remember { mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX") }
     var currentSearchEngine by remember { mutableStateOf(sharedPrefs.getString("search_engine", "MAPBOX") ?: "MAPBOX") }
 
+    // 🌟 NEW: Check user setting for speed limits
+    var showSpeedLimitSetting by remember { mutableStateOf(sharedPrefs.getBoolean("show_speed_limit", true)) }
+
+    // UI state toggles
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
     var isSettingsOpen by rememberSaveable { mutableStateOf(false) }
     var isAppDrawerOpen by rememberSaveable { mutableStateOf(false) }
 
+    // Gear selection state
     var currentGear by rememberSaveable { mutableStateOf("P") }
     var lastManualShiftTime by remember { mutableLongStateOf(0L) }
     var is3dMapMode by remember { mutableStateOf(false) }
@@ -128,8 +142,15 @@ fun TeslaLayout() {
     var isLocationPermissionGranted by remember { mutableStateOf(false) }
     var isManualOverrideActive by remember { mutableStateOf(false) }
 
+    // Use OBD speed if connected, otherwise fallback to GPS
     val effectiveSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
 
+    // 🌟 REFRESH SETTINGS when menu closes
+    LaunchedEffect(isSettingsOpen) {
+        showSpeedLimitSetting = sharedPrefs.getBoolean("show_speed_limit", true)
+    }
+
+    // Handle manual gear overrides to prevent rapid automatic switching
     LaunchedEffect(lastManualShiftTime) {
         if (lastManualShiftTime > 0) {
             isManualOverrideActive = true
@@ -138,6 +159,19 @@ fun TeslaLayout() {
         }
     }
 
+    // 🌟 SMART ETA COUNTDOWN: Decrement travel time only when moving
+    LaunchedEffect(navInstructionsList, effectiveSpeed) {
+        while (navInstructionsList.isNotEmpty() && currentRouteDuration != null) {
+            delay(1000) // Tick every second
+            // If moving (over 3 km/h), decrease the remaining time.
+            // If stuck in traffic (stopped), duration stays constant -> ETA time naturally pushes later.
+            if (effectiveSpeed > 3) {
+                currentRouteDuration = (currentRouteDuration!! - 1).coerceAtLeast(0)
+            }
+        }
+    }
+
+    // Automatic gear and map mode adjustment based on speed
     LaunchedEffect(effectiveSpeed, currentGear, isManualOverrideActive) {
         if (currentGear == "D") is3dMapMode = true else if (currentGear == "P") is3dMapMode = false
 
@@ -149,6 +183,7 @@ fun TeslaLayout() {
         }
     }
 
+    // Function to manually shift gears, respecting camera permissions for reverse
     fun manualShiftTo(gear: String) {
         lastManualShiftTime = System.currentTimeMillis()
         if (gear == "R") {
@@ -158,6 +193,7 @@ fun TeslaLayout() {
         } else currentGear = gear
     }
 
+    // Permission launchers for location and Bluetooth
     val locationPermissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions(), onResult = { permissions ->
         val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) { isLocationPermissionGranted = true; gpsStatus = "READY" } else { gpsStatus = "NO PERM" }
@@ -167,6 +203,7 @@ fun TeslaLayout() {
         if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
     })
 
+    // Attempt OBD connection when MAC address is available
     LaunchedEffect(savedObdMacAddress) {
         if (savedObdMacAddress.isNotBlank()) {
             val hasPerm = if (Build.VERSION.SDK_INT >= 31) ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED else true
@@ -178,6 +215,7 @@ fun TeslaLayout() {
         }
     }
 
+    // Initial setup: request permissions, prefetch apps, and check offline maps
     LaunchedEffect(Unit) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) isLocationPermissionGranted = true
         else locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
@@ -190,6 +228,7 @@ fun TeslaLayout() {
 
         launch(Dispatchers.IO) { com.launchers.teslalauncherv2.data.AppManager.prefetchApps(context) }
 
+        // Cleanup expired offline map routes
         launch(Dispatchers.IO) {
             val prefs = context.getSharedPreferences("offline_maps_status", Context.MODE_PRIVATE)
             val routes = prefs.getStringSet("saved_routes", mutableSetOf()) ?: mutableSetOf()
@@ -213,9 +252,12 @@ fun TeslaLayout() {
             }
             if (changed) { prefs.edit().putStringSet("saved_routes", validRoutes).apply() }
         }
+
+        // Continuously update battery level
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
 
+    // Manage LocationListener using DisposableEffect to prevent leaks
     DisposableEffect(isLocationPermissionGranted, currentInstruction) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val listener = object : LocationListener {
@@ -232,11 +274,12 @@ fun TeslaLayout() {
                     }
                     val dist = location.distanceTo(target).toInt()
 
-                    // 🌟 OPRAVENÁ LOGIKA PRO VYSOKÉ RYCHLOSTI
+                    // 🌟 FIXED HIGH-SPEED LOGIC: Node is considered passed if within 30m,
+                    // or if it was within 150m and the distance is now increasing.
                     if (dist < 30 || (dist > lastMinDistance && lastMinDistance < 150)) {
                         if (currentInstructionIndex < navInstructionsList.size - 1) {
                             currentInstructionIndex++
-                            lastMinDistance = Double.MAX_VALUE
+                            lastMinDistance = Double.MAX_VALUE // Reset for the next node
                         } else {
                             navInstructionsList = emptyList()
                             routeGeoJson = null
@@ -274,6 +317,7 @@ fun TeslaLayout() {
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
         if (isLandscape) {
             Row(modifier = Modifier.fillMaxSize()) {
+                // Left Panel in Landscape
                 Column(modifier = Modifier.fillMaxWidth(0.32f).fillMaxHeight()) {
                     InstrumentClusterWrapper(
                         modifier = Modifier.weight(0.60f),
@@ -281,6 +325,8 @@ fun TeslaLayout() {
                         carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
                         instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
                         gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
+                        speedLimit = currentSpeedLimit, // 🌟 ADDED HERE
+                        showSpeedLimit = showSpeedLimitSetting, // 🌟 NEW SETTING
                         onCancelRoute = { navInstructionsList = emptyList(); currentRouteDuration = null; routeGeoJson = null }
                     )
                     HorizontalDivider(color = Color.DarkGray, thickness = 1.dp)
@@ -291,12 +337,14 @@ fun TeslaLayout() {
                     )
                 }
 
+                // Gear Selector
                 GearSelector(
                     currentGear = currentGear,
                     onGearSelected = { gear -> manualShiftTo(gear) },
                     modifier = Modifier.width(60.dp).fillMaxHeight()
                 )
 
+                // Map View or Reverse Camera
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     if (currentGear != "R") {
                         when (currentMapEngine) {
@@ -312,6 +360,7 @@ fun TeslaLayout() {
                 }
             }
         } else {
+            // Portrait Layout
             Column(modifier = Modifier.fillMaxSize()) {
                 InstrumentClusterWrapper(
                     modifier = Modifier.wrapContentHeight().fillMaxWidth(),
@@ -319,6 +368,8 @@ fun TeslaLayout() {
                     carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
                     instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
                     gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
+                    speedLimit = currentSpeedLimit, // 🌟 AND ADDED HERE
+                    showSpeedLimit = showSpeedLimitSetting, // 🌟 NEW SETTING
                     onCancelRoute = { navInstructionsList = emptyList(); currentRouteDuration = null; routeGeoJson = null }
                 )
 
@@ -354,6 +405,7 @@ fun TeslaLayout() {
             }
         }
 
+        // Overlay Screens
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }
             SettingsScreen(onClose = { isSettingsOpen = false }, currentMapEngine = currentMapEngine, onMapEngineChange = { newEngine -> currentMapEngine = newEngine; sharedPrefs.edit().putString("map_engine", newEngine).apply() }, currentSearchEngine = currentSearchEngine, onSearchEngineChange = { newEngine -> currentSearchEngine = newEngine; sharedPrefs.edit().putString("search_engine", newEngine).apply() }, currentLocation = currentGpsLocation, currentObdMac = savedObdMacAddress, onObdMacChange = { newMac -> savedObdMacAddress = newMac; sharedPrefs.edit().putString("obd_mac", newMac).apply() }, currentRouteGeoJson = routeGeoJson)
@@ -380,6 +432,7 @@ fun TeslaLayout() {
     }
 }
 
+// Wrapper component to pass necessary state to the InstrumentCluster
 @Composable
 fun InstrumentClusterWrapper(
     modifier: Modifier,
@@ -391,6 +444,8 @@ fun InstrumentClusterWrapper(
     currentNavDistance: Int?,
     gpsSpeed: Int,
     routeDuration: Int?,
+    speedLimit: Int?, // Retained for parameter passing
+    showSpeedLimit: Boolean, // New parameter
     onCancelRoute: () -> Unit
 ) {
     val carState by carStateFlow.collectAsState()
@@ -398,9 +453,18 @@ fun InstrumentClusterWrapper(
     InstrumentCluster(
         modifier = modifier,
         isLandscape = isLandscape,
-        carState = carState.copy(speed = displaySpeed), gpsStatus = gpsStatus, batteryLevel = batteryLevel, instruction = instruction, currentNavDistance = currentNavDistance, routeDuration = routeDuration, onCancelRoute = onCancelRoute)
+        carState = carState.copy(speed = displaySpeed),
+        gpsStatus = gpsStatus,
+        batteryLevel = batteryLevel,
+        instruction = instruction,
+        currentNavDistance = currentNavDistance,
+        routeDuration = routeDuration,
+        speedLimit = speedLimit, // Passed parameter
+        showSpeedLimit = showSpeedLimit, // Passed parameter
+        onCancelRoute = onCancelRoute)
 }
 
+// Helper function to fetch system battery level
 fun getBatteryLevel(context: Context): Int {
     val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
     return batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)

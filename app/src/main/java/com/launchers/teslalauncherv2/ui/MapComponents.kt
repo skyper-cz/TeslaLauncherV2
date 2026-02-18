@@ -113,12 +113,15 @@ fun Viewport(
         val currentPoint = if (currentLocation != null) Point.fromLngLat(currentLocation.longitude, currentLocation.latitude) else (mapViewportState.cameraState?.center ?: Point.fromLngLat(14.4378, 50.0755))
 
         if (searchEngine == "GOOGLE") {
-            NetworkManager.fetchGoogleRoute(currentPoint, destinationPoint, googleApiKey) { geo, instrList, dur ->
-                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instrList); onRouteDurationUpdated(dur) }
+            // 🌟 OPRAVA: Přidán 4. parametr 'limits' (ignorujeme ho pomocí '_')
+            NetworkManager.fetchGoogleRoute(currentPoint, destinationPoint, googleApiKey) { geo, instr, dur, _ ->
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         } else {
-            NetworkManager.fetchRouteManual(currentPoint, destinationPoint, context) { geo, instrList, dur ->
-                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instrList); onRouteDurationUpdated(dur) }
+            // 🌟 OPRAVA: Přidán 4. parametr 'limits' (ignorujeme ho pomocí '_', protože Viewport je jen tupé UI)
+            // Logiku limitů řešíme v NetworkManageru a posíláme ji do MainActivity, tady jen vykreslujeme
+            NetworkManager.fetchRouteManual(currentPoint, destinationPoint, context) { geo, instr, dur, _ ->
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         }
     }
@@ -216,12 +219,14 @@ fun GoogleViewport(
         val currentPoint = if (currentLocation != null) Point.fromLngLat(currentLocation.longitude, currentLocation.latitude) else Point.fromLngLat(cameraPositionState.position.target.longitude, cameraPositionState.position.target.latitude)
 
         if (searchEngine == "GOOGLE") {
-            NetworkManager.fetchGoogleRoute(currentPoint, destinationPoint, googleApiKey) { geo, instrList, dur ->
-                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instrList); onRouteDurationUpdated(dur) }
+            // 🌟 OPRAVA: Přidán 4. parametr 'limits' (ignorujeme ho pomocí '_')
+            NetworkManager.fetchGoogleRoute(currentPoint, destinationPoint, googleApiKey) { geo, instr, dur, _ ->
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         } else {
-            NetworkManager.fetchRouteManual(currentPoint, destinationPoint, context) { geo, instrList, dur ->
-                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instrList); onRouteDurationUpdated(dur) }
+            // 🌟 OPRAVA: Přidán 4. parametr 'limits' (ignorujeme ho pomocí '_')
+            NetworkManager.fetchRouteManual(currentPoint, destinationPoint, context) { geo, instr, dur, _ ->
+                scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur) }
             }
         }
     }

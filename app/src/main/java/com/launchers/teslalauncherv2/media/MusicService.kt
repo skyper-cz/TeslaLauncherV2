@@ -9,6 +9,7 @@ import android.media.session.PlaybackState
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 
+// Background service intercepting active media sessions across the system
 class MusicService : NotificationListenerService() {
 
     private lateinit var mediaSessionManager: MediaSessionManager
@@ -20,26 +21,26 @@ class MusicService : NotificationListenerService() {
 
         val component = ComponentName(this, MusicService::class.java)
 
-        // Zaregistrujeme se k odběru změn přehrávačů
         try {
+            // Listen for apps opening/closing media sessions
             mediaSessionManager.addOnActiveSessionsChangedListener({ controllers ->
                 updateControllers(controllers)
             }, component)
 
-            // Načteme ten aktuální hned po startu
+            // Capture initial state on startup
             updateControllers(mediaSessionManager.getActiveSessions(component))
         } catch (e: SecurityException) {
-            // Aplikace ještě nemá oprávnění od uživatele
+            // Fails silently if user has not yet granted Notification Access
         }
     }
 
+    // Finds the active media player (e.g., Spotify) and attaches listeners to it
     private fun updateControllers(controllers: List<MediaController>?) {
         if (controllers.isNullOrEmpty()) return
 
-        // Odpojíme se od starého přehrávače
         currentController?.unregisterCallback(mediaControllerCallback)
 
-        // Najdeme ten, který právě hraje (případně vezmeme první dostupný)
+        // Prioritize actively playing sessions
         currentController = controllers.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
             ?: controllers.firstOrNull()
 
@@ -47,6 +48,7 @@ class MusicService : NotificationListenerService() {
         updateCurrentTrack(currentController)
     }
 
+    // Callback responding to track skips or play/pause toggles
     private val mediaControllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: MediaMetadata?) {
             updateCurrentTrack(currentController)
@@ -57,6 +59,7 @@ class MusicService : NotificationListenerService() {
         }
     }
 
+    // Extracts text and image data from the active session and pushes it to MediaManager
     private fun updateCurrentTrack(controller: MediaController?) {
         if (controller == null) return
         val metadata = controller.metadata
@@ -65,7 +68,7 @@ class MusicService : NotificationListenerService() {
         val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "Neznámá skladba"
         val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: "Neznámý interpret"
 
-        // Některé aplikace ukládají obal pod ALBUM_ART, jiné pod ART
+        // Some apps use ALBUM_ART, others use ART
         val albumArt = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
 
@@ -79,7 +82,7 @@ class MusicService : NotificationListenerService() {
         super.onDestroy()
     }
 
-    // Tyto dvě metody musí být implementované, ale necháme je prázdné
+    // Required by NotificationListenerService but unused for media
     override fun onNotificationPosted(sbn: StatusBarNotification?) {}
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {}
 }

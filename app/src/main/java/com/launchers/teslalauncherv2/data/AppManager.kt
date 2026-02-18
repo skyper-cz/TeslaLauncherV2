@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+// Data class representing an installed application on the device
 data class AppInfo(
     val label: String,
     val packageName: String,
@@ -18,11 +19,12 @@ data class AppInfo(
     val intent: Intent
 )
 
+// Singleton manager responsible for loading and caching the list of installed apps
 object AppManager {
-    // Zde si držíme aplikace v paměti
+    // In-memory cache to prevent slow, repeated queries to the Android PackageManager
     private var cachedApps: List<AppInfo> = emptyList()
 
-    // Tato funkce se zavolá tiše na pozadí hned po startu Launcheru
+    // Silently loads all launchable apps in the background during application startup
     suspend fun prefetchApps(context: Context) = withContext(Dispatchers.IO) {
         if (cachedApps.isEmpty()) {
             val pm = context.packageManager
@@ -37,14 +39,15 @@ object AppManager {
 
                 AppInfo(label, packageName, drawableToImageBitmap(drawable), launchIntent)
             }
-                .filter { it.packageName != context.packageName }
+                .filter { it.packageName != context.packageName } // Exclude the launcher itself
                 .sortedBy { it.label.lowercase() }
         }
     }
 
-    // Tato funkce už jen okamžitě vrátí hotový seznam z paměti
+    // Instantly returns the cached list for the App Drawer UI
     fun getApps(): List<AppInfo> = cachedApps
 
+    // Helper function to convert Android Vector/Bitmap Drawables into Compose-friendly ImageBitmaps
     private fun drawableToImageBitmap(drawable: Drawable): ImageBitmap {
         if (drawable is BitmapDrawable) return drawable.bitmap.asImageBitmap()
         val width = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 1

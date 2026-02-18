@@ -13,6 +13,7 @@ import androidx.core.content.ContextCompat
 import com.serenegiant.usb.USBMonitor
 import java.util.ArrayList
 
+// Wrapper for the libuvc USBMonitor, providing safer intent flags for newer Android versions
 class CustomUSBMonitor(context: Context, private val listener: USBMonitor.OnDeviceConnectListener) {
 
     private val appContext = context.applicationContext
@@ -22,13 +23,14 @@ class CustomUSBMonitor(context: Context, private val listener: USBMonitor.OnDevi
     private val wrappedMonitor = USBMonitor(appContext, listener)
     private var isRegistered = false
 
+    // Safely constructs PendingIntent required for Android 12+ (API 31+) targeting
     private val permissionIntent: PendingIntent?
         get() {
             return try {
                 val intent = Intent(actionUsbPermission)
                 intent.setPackage(appContext.packageName)
 
-                // ZMĚNA: Přidán FLAG_UPDATE_CURRENT, aby se intent obnovil
+                // Requires FLAG_MUTABLE or FLAG_IMMUTABLE on modern Androids
                 var flags = PendingIntent.FLAG_UPDATE_CURRENT
                 if (Build.VERSION.SDK_INT >= 31) {
                     flags = flags or PendingIntent.FLAG_MUTABLE
@@ -41,11 +43,13 @@ class CustomUSBMonitor(context: Context, private val listener: USBMonitor.OnDevi
             }
         }
 
+    // Broadcast receiver handling physical attachment, detachment, and permission granting
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val action = intent.action
             if (actionUsbPermission == action) {
                 synchronized(this) {
+                    // Parcelable handling updated for Android 13+ deprecations
                     val device: UsbDevice? = if (Build.VERSION.SDK_INT >= 33) {
                         intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
                     } else {
@@ -98,6 +102,7 @@ class CustomUSBMonitor(context: Context, private val listener: USBMonitor.OnDevi
         } catch (e: Exception) {}
     }
 
+    // Requests user permission dialogue for an attached USB device
     fun requestPermission(device: UsbDevice) {
         if (usbManager.hasPermission(device)) {
             listener.onConnect(device, wrappedMonitor.openDevice(device), true)
@@ -109,13 +114,13 @@ class CustomUSBMonitor(context: Context, private val listener: USBMonitor.OnDevi
         }
     }
 
-    // Nová funkce pro vynucené otevření
+    // Direct open execution if permissions are already verified
     fun forceOpen(device: UsbDevice) {
         try {
             listener.onConnect(device, wrappedMonitor.openDevice(device), true)
         } catch (e: Exception) {
             Log.e("CustomUSBMonitor", "Force Open Failed", e)
-            throw e // Pošleme chybu dál, ať ji vidíme v UI
+            throw e
         }
     }
 

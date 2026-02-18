@@ -1,0 +1,48 @@
+name: Android Nightly Build 🚀
+
+on:
+  push:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 2 * * *' # Spustí se každý den ve 2:00 ráno UTC
+  workflow_dispatch: # Umožňuje ruční spuštění tlačítkem
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. Stáhni kód z repozitáře
+      - uses: actions/checkout@v4
+
+      # 2. Nastav Javu (Verze 17 je ideální pro Android Gradle Plugin 8+)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      # 3. KROK SMRTI (v dobrém slova smyslu): Vytvoření local.properties
+      # Tady GitHub vezme uložená tajemství a vyrobí soubor, který váš build.gradle potřebuje.
+      - name: Create local.properties
+        run: |
+          echo "MAPBOX_DOWNLOADS_TOKEN=${{ secrets.MAPBOX_DOWNLOADS_TOKEN }}" > local.properties
+          echo "MAPBOX_PUBLIC_TOKEN=${{ secrets.MAPBOX_PUBLIC_TOKEN }}" >> local.properties
+          echo "GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }}" >> local.properties
+
+      # 4. Povolení spuštění Gradle wrapperu
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      # 5. Samotné sestavení Debug verze
+      - name: Build with Gradle
+        run: ./gradlew assembleDebug
+
+      # 6. Uložení APK jako artefaktu ke stažení
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: TeslaLauncher-Nightly
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14

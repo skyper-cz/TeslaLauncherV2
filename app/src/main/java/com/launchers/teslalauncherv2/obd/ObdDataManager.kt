@@ -13,7 +13,9 @@ import com.launchers.teslalauncherv2.data.CarState
 import java.io.InputStream
 import java.io.OutputStream
 
+// Singleton manager handling background OBD2 Bluetooth communication
 object ObdDataManager {
+    // Exposes current car metrics to the UI securely
     private val _carState = MutableStateFlow(CarState())
     val carState: StateFlow<CarState> = _carState.asStateFlow()
 
@@ -21,6 +23,7 @@ object ObdDataManager {
     private var isUserStopped = false
     private const val TAG = "OBD_DEBUG"
 
+    // Initiates the Bluetooth socket and begins polling OBD commands
     @SuppressLint("MissingPermission")
     fun connect(context: Context, macAddress: String) {
         Log.d(TAG, "Startuji připojení k: $macAddress")
@@ -33,6 +36,8 @@ object ObdDataManager {
                     val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
                     val adapter = bluetoothManager.adapter
                     val device = adapter?.getRemoteDevice(macAddress)
+
+                    // Standard SPP (Serial Port Profile) UUID for ELM327 adapters
                     val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
                     val socket = device?.createRfcommSocketToServiceRecord(uuid)
 
@@ -42,6 +47,7 @@ object ObdDataManager {
                     val inStream = socket?.inputStream
                     val outStream = socket?.outputStream
 
+                    // Initial ELM327 setup: Reset and turn off echo
                     sendCommand(outStream, inStream, "ATZ\r")
                     delay(500)
                     sendCommand(outStream, inStream, "ATE0\r")
@@ -49,18 +55,19 @@ object ObdDataManager {
 
                     var loopCounter = 0
 
+                    // Continuous polling loop
                     while (!isUserStopped && socket?.isConnected == true) {
-                        // 1. Rychlost
+                        // 1. Fetch Vehicle Speed (PID 0D)
                         val speedRaw = sendCommand(outStream, inStream, "010D\r")
                         val speed = parseSpeed(speedRaw)
                         delay(100)
 
-                        // 2. Otáčky
+                        // 2. Fetch Engine RPM (PID 0C)
                         val rpmRaw = sendCommand(outStream, inStream, "010C\r")
                         val rpm = parseRpm(rpmRaw)
                         delay(100)
 
-                        // 3. Chybové kódy motoru (Každý 25. cyklus = cca 10 vteřin)
+                        // 3. Fetch Diagnostic Trouble Codes (Every ~10 seconds)
                         loopCounter++
                         var dtcError: String? = _carState.value.error
                         if (loopCounter % 25 == 0) {
@@ -68,6 +75,7 @@ object ObdDataManager {
                             dtcError = parseDTC(dtcRaw)
                         }
 
+                        // Update global state if valid data was received
                         if (speed != null || rpm != null) {
                             _carState.value = _carState.value.copy(
                                 speed = speed ?: _carState.value.speed,
@@ -75,18 +83,22 @@ object ObdDataManager {
                                 error = dtcError
                             )
                         }
-                        delay(200)
+                        delay(200) // Prevent flooding the Bluetooth serial bus
                     }
                     socket?.close()
 
                 } catch (e: Exception) {
+                    // Handle disconnects gracefully
                     _carState.value = _carState.value.copy(isConnected = false, speed = 0, rpm = 0, error = null)
                 }
+
+                // Auto-reconnect delay
                 if (!isUserStopped) delay(5000)
             }
         }
     }
 
+    // Writes hex command to BT socket and reads response until '>' character
     private fun sendCommand(outStream: OutputStream?, inStream: InputStream?, command: String): String {
         try {
             outStream?.write(command.toByteArray())
@@ -103,6 +115,7 @@ object ObdDataManager {
         } catch (e: Exception) { return "" }
     }
 
+    // Extracts hexadecimal speed value from raw ELM327 string
     private fun parseSpeed(rawData: String): Int? {
         val clean = rawData.replace(" ", "").replace("\r", "").replace("\n", "")
         if (clean.contains("410D") && clean.length >= 6) {
@@ -111,6 +124,7 @@ object ObdDataManager {
         return null
     }
 
+    // Extracts and calculates hexadecimal RPM value from raw ELM327 string
     private fun parseRpm(rawData: String): Int? {
         val clean = rawData.replace(" ", "").replace("\r", "").replace("\n", "")
         if (clean.contains("410C") && clean.length >= 8) {
@@ -121,14 +135,14 @@ object ObdDataManager {
         return null
     }
 
-    // 🌟 NOVÝ PARSER NA CHYBY MOTORU (P/C/B/U kódy)
+    // Parses raw Mode 03 hex response to decode standard engine trouble codes (e.g., P0171)
     private fun parseDTC(rawData: String): String? {
         val clean = rawData.replace(" ", "").replace("\r", "").replace("\n", "")
         if (clean.contains("43")) {
             val start = clean.indexOf("43") + 2
             if (start + 4 <= clean.length) {
                 val hex = clean.substring(start, start + 4)
-                if (hex != "0000") { // 0000 znamená bez chyb
+                if (hex != "0000") { // 0000 means no active codes
                     val prefix = when (hex[0]) {
                         '0' -> "P0"; '1' -> "P1"; '2' -> "P2"; '3' -> "P3"
                         '4' -> "C0"; '5' -> "C1"; '6' -> "C2"; '7' -> "C3"
@@ -136,13 +150,14 @@ object ObdDataManager {
                         'C', 'c' -> "U0"; 'D', 'd' -> "U1"; 'E', 'e' -> "U2"; 'F', 'f' -> "U3"
                         else -> "P0"
                     }
-                    return "$prefix${hex.substring(1)}" // Výsledek např. P0171
+                    return "$prefix${hex.substring(1)}"
                 }
             }
         }
         return null
     }
 
+    // Halts background polling completely
     fun stop() {
         isUserStopped = true
         monitorJob?.cancel()

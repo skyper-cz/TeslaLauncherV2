@@ -36,13 +36,13 @@ object NetworkManager {
     }
 
     // ==========================================
-    // 1. MAPBOX SLUŽBY
+    // 1. MAPBOX SERVICES
     // ==========================================
 
     fun fetchSuggestions(query: String, context: Context, onResult: (List<SearchSuggestion>) -> Unit) {
         if (!isOnline(context)) {
             runOnMain {
-                Toast.makeText(context, "Offline: Nelze vyhledávat", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Offline: Cannot search", Toast.LENGTH_SHORT).show()
                 onResult(emptyList())
             }
             return
@@ -86,31 +86,33 @@ object NetworkManager {
         })
     }
 
-    // 🌟 ZMĚNA ZDE: Vrací List<NavInstruction> místo jednoho NavInstruction?
-    fun fetchRouteManual(origin: Point, destination: Point, context: Context, onRouteFound: (String?, List<NavInstruction>, Int?) -> Unit) {
+    // 🌟 MAPBOX ROUTE: Nyní vrací i seznam limitů (4. parametr)
+    fun fetchRouteManual(origin: Point, destination: Point, context: Context, onRouteFound: (String?, List<NavInstruction>, Int?, List<Int?>) -> Unit) {
         if (!isOnline(context)) {
-            runOnMain { Toast.makeText(context, "Offline: Trasa vyžaduje internet", Toast.LENGTH_LONG).show() }
-            runOnMain { onRouteFound(null, emptyList(), null) }
+            runOnMain { Toast.makeText(context, "Offline: Route requires internet", Toast.LENGTH_LONG).show() }
+            runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
             return
         }
 
         val accessToken = context.getString(R.string.mapbox_access_token)
+
+        // Přidáno annotations=maxspeed
         val url = "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/" +
                 "${origin.longitude()},${origin.latitude()};${destination.longitude()},${destination.latitude()}" +
-                "?geometries=geojson&steps=true&overview=full&access_token=$accessToken"
+                "?geometries=geojson&steps=true&overview=full&annotations=maxspeed&access_token=$accessToken"
 
         val request = Request.Builder().url(url).build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 e.printStackTrace()
-                runOnMain { onRouteFound(null, emptyList(), null) }
+                runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!it.isSuccessful) {
-                        runOnMain { onRouteFound(null, emptyList(), null) }
+                        runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
                         return
                     }
                     val jsonString = it.body?.string() ?: return
@@ -122,15 +124,33 @@ object NetworkManager {
                             val geometry = route.getJSONObject("geometry")
                             val featureString = """{ "type": "FeatureCollection", "features": [{ "type": "Feature", "properties": {}, "geometry": $geometry }] }"""
 
-                            // Získání celkového času v sekundách
                             val durationSeconds = route.optDouble("duration", 0.0).toInt()
 
-                            val navInstructions = mutableListOf<NavInstruction>()
+                            // 🌟 PARSOVÁNÍ RYCHLOSTÍ
+                            val speedLimits = mutableListOf<Int?>()
                             val legs = route.getJSONArray("legs")
+                            if (legs.length() > 0) {
+                                val annotation = legs.getJSONObject(0).optJSONObject("annotation")
+                                val maxspeedArray = annotation?.optJSONArray("maxspeed")
 
+                                if (maxspeedArray != null) {
+                                    for (k in 0 until maxspeedArray.length()) {
+                                        val item = maxspeedArray.get(k)
+                                        if (item is JSONObject) {
+                                            val s = item.optInt("speed", 0)
+                                            speedLimits.add(if (s > 0) s else null)
+                                        } else if (item.toString() == "none") {
+                                            speedLimits.add(-1)
+                                        } else {
+                                            speedLimits.add(null)
+                                        }
+                                    }
+                                }
+                            }
+
+                            val navInstructions = mutableListOf<NavInstruction>()
                             if (legs.length() > 0) {
                                 val steps = legs.getJSONObject(0).getJSONArray("steps")
-                                // Projdeme VŠECHNY kroky na trase
                                 for (i in 0 until steps.length()) {
                                     val step = steps.getJSONObject(i)
                                     val maneuver = step.getJSONObject("maneuver")
@@ -140,27 +160,23 @@ object NetworkManager {
                                     val distance = step.getDouble("distance").toInt()
                                     val modifier = if (maneuver.has("modifier")) maneuver.getString("modifier") else null
 
-                                    // Vynecháme nudné pokyny typu "Jedeš rovně" hned na prvním metru, pokud je jich tam zbytečně moc.
-                                    // Bereme jen ty, které mají reálný vliv. (Případně tam můžeš první instrukci přeskočit jako to bylo původně: val stepIndex = if (steps.length() > 1) 1 else 0)
                                     if (distance > 0 || i == steps.length() - 1) {
                                         navInstructions.add(NavInstruction(text, distance, modifier, maneuverPoint))
                                     }
                                 }
                             }
 
-                            // Pokud Mapbox začal hned prvním zbytečným pokynem ("Pokračujte..."), raději ho přeskočíme
                             if (navInstructions.size > 1 && navInstructions.first().distance < 10) {
                                 navInstructions.removeAt(0)
                             }
 
-                            // Odesíláme všechny 3 hodnoty!
-                            runOnMain { onRouteFound(featureString, navInstructions, durationSeconds) }
+                            runOnMain { onRouteFound(featureString, navInstructions, durationSeconds, speedLimits) }
                         } else {
-                            runOnMain { onRouteFound(null, emptyList(), null) }
+                            runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        runOnMain { onRouteFound(null, emptyList(), null) }
+                        runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
                     }
                 }
             }
@@ -169,7 +185,7 @@ object NetworkManager {
 
 
     // ==========================================
-    // 2. GOOGLE MAPS SLUŽBY
+    // 2. GOOGLE MAPS SERVICES
     // ==========================================
 
     fun fetchGoogleSuggestions(query: String, apiKey: String, onResult: (List<SearchSuggestion>) -> Unit) {
@@ -207,21 +223,21 @@ object NetworkManager {
         })
     }
 
-    // 🌟 ZMĚNA ZDE: Vrací List<NavInstruction> místo jednoho NavInstruction?
-    fun fetchGoogleRoute(start: Point, end: Point, apiKey: String, onRouteFound: (String?, List<NavInstruction>, Int?) -> Unit) {
+    // 🌟 GOOGLE ROUTE: Teď také přijímá 4 parametry v callbacku (aby to sedělo s UI)
+    fun fetchGoogleRoute(start: Point, end: Point, apiKey: String, onRouteFound: (String?, List<NavInstruction>, Int?, List<Int?>) -> Unit) {
         val url = "https://maps.googleapis.com/maps/api/directions/json?origin=${start.latitude()},${start.longitude()}&destination=${end.latitude()},${end.longitude()}&key=$apiKey"
         val request = Request.Builder().url(url).build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 e.printStackTrace()
-                runOnMain { onRouteFound(null, emptyList(), null) }
+                runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!it.isSuccessful) {
-                        runOnMain { onRouteFound(null, emptyList(), null) }
+                        runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
                         return
                     }
                     val jsonString = it.body?.string() ?: return
@@ -246,7 +262,6 @@ object NetworkManager {
                                 durationSeconds = leg.getJSONObject("duration").getInt("value")
 
                                 val steps = leg.getJSONArray("steps")
-                                // Projdeme VŠECHNY kroky na trase
                                 for (i in 0 until steps.length()) {
                                     val step = steps.getJSONObject(i)
                                     val text = step.getString("html_instructions").replace(Regex("<.*?>"), "")
@@ -254,19 +269,18 @@ object NetworkManager {
                                     val endLoc = step.getJSONObject("end_location")
                                     val maneuverPoint = Point.fromLngLat(endLoc.getDouble("lng"), endLoc.getDouble("lat"))
 
-                                    // Google nemá "modifier", tak ho necháváme null (budeme ukazovat rovnou šipku)
                                     navInstructions.add(NavInstruction(text, distance, null, maneuverPoint))
                                 }
                             }
 
-                            // Odesíláme všechny 3 hodnoty!
-                            runOnMain { onRouteFound(featureString, navInstructions, durationSeconds) }
+                            // 🌟 Vracíme prázdný seznam limitů (Google API je v základu neumí)
+                            runOnMain { onRouteFound(featureString, navInstructions, durationSeconds, emptyList()) }
                         } else {
-                            runOnMain { onRouteFound(null, emptyList(), null) }
+                            runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
-                        runOnMain { onRouteFound(null, emptyList(), null) }
+                        runOnMain { onRouteFound(null, emptyList(), null, emptyList()) }
                     }
                 }
             }

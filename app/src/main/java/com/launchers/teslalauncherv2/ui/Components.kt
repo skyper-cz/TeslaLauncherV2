@@ -14,9 +14,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -59,17 +61,21 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 
-// POMOCNÉ FUNKCE
+// HELPER FUNCTIONS
+
+// Formats meters into a readable string (m or km)
 fun formatDistance(meters: Int): String {
     return if (meters >= 1000) String.format(Locale.US, "%.1f km", meters / 1000f) else "$meters m"
 }
 
+// Dispatches media key events to the system (Play/Pause, Next, Prev)
 fun sendMediaKeyEvent(context: Context, keyCode: Int) {
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
     audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
 }
 
+// Calculates a bounding box geometry around a given route for offline downloading
 fun getRouteBoundingBox(routeGeoJson: String, bufferDegrees: Double = 0.05): com.mapbox.geojson.Geometry? {
     try {
         val lineString = com.mapbox.geojson.FeatureCollection.fromJson(routeGeoJson).features()?.firstOrNull()?.geometry() as? com.mapbox.geojson.LineString
@@ -96,8 +102,54 @@ fun getRouteBoundingBox(routeGeoJson: String, bufferDegrees: Double = 0.05): com
 }
 
 
-// KOMPONENTY ROZHRANÍ
+// UI COMPONENTS
 
+// 🌟 NEW: Renders the speed limit sign (supports numeric and "Unlimited" German style)
+@Composable
+fun SpeedLimitSign(limit: Int, modifier: Modifier = Modifier) {
+    // If limit is -1 (or effectively 0/very high), it implies no limit (German Autobahn)
+    if (limit <= 0 || limit > 150) {
+        // German "End of all restrictions" sign (Zeichen 282)
+        Box(
+            modifier = modifier
+                .background(Color.White, CircleShape)
+                .border(2.dp, Color.Black, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val strokeWidth = 3.dp.toPx()
+                // Draw 3 diagonal black lines
+                for (i in 1..3) {
+                    val offset = i * 0.15f
+                    drawLine(
+                        color = Color.Black,
+                        start = Offset(size.width * (0.1f + offset), size.height * 0.8f),
+                        end = Offset(size.width * (0.5f + offset), size.height * 0.2f),
+                        strokeWidth = strokeWidth,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round
+                    )
+                }
+            }
+        }
+    } else {
+        // Standard Euro-style speed limit (Red circle, white bg, black text)
+        Box(
+            modifier = modifier
+                .background(Color.White, CircleShape)
+                .border(4.dp, Color.Red, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = "$limit",
+                color = Color.Black,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+        }
+    }
+}
+
+// Main dashboard panel displaying speed, RPM, and navigation
 @Composable
 fun InstrumentCluster(
     modifier: Modifier = Modifier,
@@ -108,12 +160,19 @@ fun InstrumentCluster(
     instruction: NavInstruction?,
     currentNavDistance: Int? = null,
     routeDuration: Int? = null,
+    speedLimit: Int? = null,
+    showSpeedLimit: Boolean = true, // 🌟 NEW: User preference toggle
     onCancelRoute: () -> Unit = {}
 ) {
+    // Determine if the vehicle is speeding to color the text red
+    val isSpeeding = speedLimit != null && speedLimit > 0 && carState.speed > speedLimit + 5 // +5 tolerance
+    val speedColor = if (isSpeeding) Color(0xFFFF4444) else Color.White
+
     Column(modifier = modifier.fillMaxWidth().background(Color.Black).padding(16.dp)) {
         TopStatusBar(gpsStatus, carState.isConnected, carState.isDemoMode, batteryLevel, carState.error)
 
         if (isLandscape) {
+            // Landscape layout: Nav top, Speed/RPM bottom
             Column(modifier = Modifier.fillMaxSize().padding(top = 16.dp), verticalArrangement = Arrangement.SpaceBetween) {
                 if (instruction != null) {
                     NavigationDisplay(instruction, currentNavDistance ?: instruction.distance, routeDuration, onCancelRoute)
@@ -123,13 +182,30 @@ fun InstrumentCluster(
                 Spacer(modifier = Modifier.weight(1f))
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    Text(text = "${carState.speed}", fontSize = 80.sp, fontWeight = FontWeight.Bold, color = Color.White, letterSpacing = (-2).sp)
+                    // 🌟 UPDATED: Display dynamic speed limit sign
+                    if (showSpeedLimit && speedLimit != null) {
+                        SpeedLimitSign(limit = speedLimit, modifier = Modifier.size(42.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+
+                    // 🌟 SPEEDOMETER FIX: maxLines and fixed line height prevent layout jumps
+                    Text(
+                        text = "${carState.speed}",
+                        fontSize = 80.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = speedColor,
+                        letterSpacing = (-2).sp,
+                        maxLines = 1,          // Never wrap
+                        softWrap = false,      // Disable soft wrap
+                        lineHeight = 80.sp     // Fix line height to stop numbers jumping
+                    )
                     Text(text = "KM/H", fontSize = 14.sp, color = Color.Gray, fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 RpmBar(rpm = carState.rpm)
             }
         } else {
+            // Portrait layout: Nav/RPM left, Speed right
             Spacer(modifier = Modifier.height(16.dp))
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                 Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
@@ -139,9 +215,34 @@ fun InstrumentCluster(
                     }
                     RpmBar(rpm = carState.rpm)
                 }
-                Column(modifier = Modifier.weight(0.5f), horizontalAlignment = Alignment.End) {
+                Column(modifier = Modifier.weight(0.6f), horizontalAlignment = Alignment.End) {
                     if (carState.coolantTemp > 0) Text(text = "${carState.coolantTemp}°C", color = Color.Gray, fontSize = 14.sp)
-                    Text(text = "${carState.speed}", fontSize = 80.sp, fontWeight = FontWeight.Bold, color = Color.White, letterSpacing = (-2).sp)
+
+                    // 🌟 ALIGNMENT FIX FOR PORTRAIT MODE
+                    Row(
+                        verticalAlignment = Alignment.Bottom, // Align to text baseline
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        if (showSpeedLimit && speedLimit != null) {
+                            // Align sign vertically with the speed text
+                            Box(modifier = Modifier.align(Alignment.CenterVertically)) {
+                                SpeedLimitSign(limit = speedLimit, modifier = Modifier.size(36.dp))
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                        }
+
+                        Text(
+                            text = "${carState.speed}",
+                            fontSize = 80.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = speedColor,
+                            letterSpacing = (-2).sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            lineHeight = 80.sp,
+                            modifier = Modifier.alignByBaseline() // Critical for aligning digits
+                        )
+                    }
                     Text(text = "KM/H", fontSize = 14.sp, color = Color.Gray, fontWeight = FontWeight.SemiBold)
                 }
             }
@@ -149,6 +250,7 @@ fun InstrumentCluster(
     }
 }
 
+// ... (Rest of UI components: TopStatusBar, NavigationDisplay, TeslaSearchBar, RpmBar, WideMusicPlayer, Dock, AppMenuItem, GearSelector) ...
 @Composable
 fun TopStatusBar(gpsStatus: String?, isConnected: Boolean, isDemoMode: Boolean, batteryLevel: Int, carError: String?) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -256,36 +358,6 @@ fun RpmBar(rpm: Int) {
     }
 }
 
-@Composable
-fun NightPanelScreen(speed: Int, rpm: Int, error: String?, instruction: NavInstruction?, currentNavDistance: Int?, onExit: () -> Unit) {
-    // 🌟 OPRAVA: Odstraněna animace rychlosti. OBD posílá data bleskově, animace to jen zasekávala.
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-            if (instruction != null) {
-                // 🌟 OPRAVA: Čteme živou vzdálenost z GPS
-                val dist = currentNavDistance ?: instruction.distance
-                if (dist > 2000) {
-                    Text(text = String.format(Locale.US, "%.1f km", dist / 1000f), color = Color(0xFF444444), fontSize = 24.sp, fontWeight = FontWeight.Medium)
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val icon = when { instruction.modifier?.contains("left") == true -> Icons.AutoMirrored.Filled.ArrowBack; instruction.modifier?.contains("right") == true -> Icons.AutoMirrored.Filled.ArrowForward; else -> Icons.Default.Navigation }
-                        Icon(icon, null, tint = Color(0xFF008888), modifier = Modifier.size(48.dp))
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Text(text = "$dist m", color = Color(0xFF00AAAA), fontSize = 40.sp, fontWeight = FontWeight.Bold)
-                    }
-                }
-                Spacer(modifier = Modifier.height(32.dp))
-            }
-            Text(text = "$speed", color = Color(0xFF888888), fontSize = 140.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = (-5).sp)
-            Text("km/h", color = Color(0xFF333333), fontSize = 20.sp)
-
-            if (rpm > 3500) { Spacer(modifier = Modifier.height(24.dp)); Text(text = "$rpm RPM", color = Color(0xFFBB0000), fontSize = 32.sp, fontWeight = FontWeight.Bold) }
-            if (!error.isNullOrEmpty()) { Spacer(modifier = Modifier.height(24.dp)); Text(text = "⚠ $error", color = Color(0xFFAAAA00), fontSize = 24.sp, fontWeight = FontWeight.Bold, modifier = Modifier.background(Color(0xFF222200), RoundedCornerShape(8.dp)).padding(horizontal = 16.dp, vertical = 8.dp)) }
-        }
-        Box(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.15f).background(Color.Transparent).clickable { onExit() }, contentAlignment = Alignment.Center) { Text("TAP TO WAKE", color = Color(0xFF111111), fontSize = 10.sp, modifier = Modifier.padding(bottom = 16.dp)) }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun WideMusicPlayer(modifier: Modifier = Modifier, isLandscape: Boolean = false) {
@@ -311,7 +383,6 @@ fun WideMusicPlayer(modifier: Modifier = Modifier, isLandscape: Boolean = false)
         modifier = modifier.fillMaxHeight().background(Color(0xFF1A1A1A), shape = RoundedCornerShape(12.dp)).padding(if (isLandscape) 4.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 🌟 OPRAVA: Dynamická velikost obalu alba podle otočení displeje
         val imageSize = if (isLandscape) 48.dp else 72.dp
 
         Box(
@@ -343,7 +414,6 @@ fun WideMusicPlayer(modifier: Modifier = Modifier, isLandscape: Boolean = false)
                 }
             }
 
-            // 🌟 OPRAVA: Tlačítka se zmenší, aby nepřetékala
             val playSize = if (isLandscape) 36.dp else 48.dp
             val skipSize = if (isLandscape) 28.dp else 36.dp
             val iconSize = if (isLandscape) 24.dp else 28.dp
@@ -386,7 +456,6 @@ fun Dock(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // 🌟 ZDE PŘEDÁVÁME INFORMACI O OTOČENÍ DO PŘEHRÁVAČE
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 WideMusicPlayer(modifier = Modifier.fillMaxSize(), isLandscape = true)
             }
