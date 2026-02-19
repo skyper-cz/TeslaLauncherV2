@@ -46,8 +46,10 @@ import com.launchers.teslalauncherv2.data.CarState
 import com.launchers.teslalauncherv2.data.NavInstruction
 import com.launchers.teslalauncherv2.data.AppManager
 import com.launchers.teslalauncherv2.map.OfflineMapManager
+import com.launchers.teslalauncherv2.map.NetworkManager
 import com.launchers.teslalauncherv2.obd.ObdDataManager
 import com.launchers.teslalauncherv2.hardware.ReverseCameraScreen
+import com.mapbox.geojson.Point
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -96,6 +98,7 @@ fun TeslaLayout() {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val scope = rememberCoroutineScope()
 
     val carStateFlow = ObdDataManager.carState
     val carStateSnapshot by carStateFlow.collectAsState()
@@ -108,8 +111,12 @@ fun TeslaLayout() {
     var speedLimitsList by remember { mutableStateOf<List<Int?>>(emptyList()) }
     var currentSpeedLimit by remember { mutableStateOf<Int?>(null) }
 
-    // 🌟 NOVÉ: Uložení fyzických souřadnic trasy pro párování limitů
     var routeCoordinates by remember { mutableStateOf<List<Location>>(emptyList()) }
+
+    // 🌟 NOVÉ: Ukládáme si cíl trasy pro případné přepočítání
+    var currentDestination by remember { mutableStateOf<Point?>(null) }
+    // Flag zabraňující spamu dotazů na API při přepočítávání
+    var isRerouting by remember { mutableStateOf(false) }
 
     val currentInstruction = navInstructionsList.getOrNull(currentInstructionIndex)
 
@@ -124,6 +131,7 @@ fun TeslaLayout() {
     var currentMapEngine by remember { mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX") }
     var currentSearchEngine by remember { mutableStateOf(sharedPrefs.getString("search_engine", "MAPBOX") ?: "MAPBOX") }
     var showSpeedLimitSetting by remember { mutableStateOf(sharedPrefs.getBoolean("show_speed_limit", true)) }
+    val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
 
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
     var isSettingsOpen by rememberSaveable { mutableStateOf(false) }
@@ -238,7 +246,7 @@ fun TeslaLayout() {
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
 
-    DisposableEffect(isLocationPermissionGranted, currentInstruction, routeCoordinates) {
+    DisposableEffect(isLocationPermissionGranted, currentInstruction, routeCoordinates, currentDestination, isRerouting) {
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
@@ -246,28 +254,70 @@ fun TeslaLayout() {
                 currentGpsLocation = location
                 if (location.hasSpeed()) currentSpeedGps = (location.speed * 3.6f).toInt()
 
-                // 🌟 NOVÁ LOGIKA PRO AKTUALIZACI RYCHLOSTI BĚHEM JÍZDY
                 if (routeCoordinates.isNotEmpty() && speedLimitsList.isNotEmpty()) {
                     var minDistance = Float.MAX_VALUE
-                    var closestIndex = 0
+                    var closestSegmentIndex = 0
 
-                    // Najdeme nejbližší bod na mapové čáře k aktuální GPS pozici
-                    for (i in routeCoordinates.indices) {
-                        val dist = location.distanceTo(routeCoordinates[i])
+                    // 1. Hledáme nejbližší ÚSEK (čáru mezi dvěma body), ne jen bod!
+                    for (i in 0 until routeCoordinates.size - 1) {
+                        val a = routeCoordinates[i]
+                        val b = routeCoordinates[i + 1]
+
+                        val dist = pointToLineDistance(location, a, b)
+
                         if (dist < minDistance) {
                             minDistance = dist
-                            closestIndex = i
+                            closestSegmentIndex = i
                         }
                     }
 
-                    // Napárujeme ho na rychlostní limity
-                    val limitIndex = closestIndex.coerceAtMost(speedLimitsList.size - 1)
+                    // 2. Napárujeme ho na rychlostní limity (které vrací API po úsecích)
+                    val limitIndex = closestSegmentIndex.coerceAtMost(speedLimitsList.size - 1)
                     currentSpeedLimit = speedLimitsList.getOrNull(limitIndex)
+
+                    // 3. Detekce sjetí z trasy (Off-route Rerouting)
+                    // Musíme být víc jak 50m od čáry a zároveň mít kvalitní GPS signál (accuracy < 30m),
+                    // aby to nepřepočítávalo při vjezdu do tunelu.
+                    if (minDistance > 50f && location.accuracy < 30f && currentDestination != null && !isRerouting) {
+                        isRerouting = true
+                        Toast.makeText(context, "Rerouting...", Toast.LENGTH_SHORT).show()
+
+                        val currentPoint = Point.fromLngLat(location.longitude, location.latitude)
+
+                        if (currentMapEngine == "GOOGLE") {
+                            NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
+                                scope.launch(Dispatchers.Main) {
+                                    if (geo != null) {
+                                        routeGeoJson = geo
+                                        navInstructionsList = instr
+                                        currentRouteDuration = dur
+                                        speedLimitsList = limits
+                                        currentInstructionIndex = 0
+                                        lastMinDistance = Double.MAX_VALUE
+                                    }
+                                    isRerouting = false
+                                }
+                            }
+                        } else {
+                            NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
+                                scope.launch(Dispatchers.Main) {
+                                    if (geo != null) {
+                                        routeGeoJson = geo
+                                        navInstructionsList = instr
+                                        currentRouteDuration = dur
+                                        speedLimitsList = limits
+                                        currentInstructionIndex = 0
+                                        lastMinDistance = Double.MAX_VALUE
+                                    }
+                                    isRerouting = false
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // Logika navigačních instrukcí
                 val instruction = currentInstruction
-                if (instruction?.maneuverPoint != null) {
+                if (instruction?.maneuverPoint != null && !isRerouting) {
                     val target = Location("T").apply {
                         latitude = instruction.maneuverPoint.latitude()
                         longitude = instruction.maneuverPoint.longitude()
@@ -286,6 +336,7 @@ fun TeslaLayout() {
                             currentRouteDuration = null
                             speedLimitsList = emptyList()
                             currentSpeedLimit = null
+                            currentDestination = null // Reset cíle po dojetí
                             lastMinDistance = Double.MAX_VALUE
                             Toast.makeText(context, "You have arrived!", Toast.LENGTH_LONG).show()
                         }
@@ -316,7 +367,6 @@ fun TeslaLayout() {
         }
     }
 
-    // 🌟 Zjednodušená akce na zrušení trasy
     val cancelRouteAction = {
         navInstructionsList = emptyList()
         currentRouteDuration = null
@@ -324,9 +374,9 @@ fun TeslaLayout() {
         routeCoordinates = emptyList()
         speedLimitsList = emptyList()
         currentSpeedLimit = null
+        currentDestination = null // 🌟 Smazání cíle při stornu
     }
 
-    // 🌟 Metoda, která z GeoJSONu vytáhne fyzické body cesty (aby s nimi šlo párovat rychlost)
     val handleGeoJsonUpdate: (String?) -> Unit = { geo ->
         routeGeoJson = geo
         if (geo != null) {
@@ -382,6 +432,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
                                 onCancelRoute = cancelRouteAction
                             )
                             "GOOGLE" -> GoogleViewport(
@@ -391,6 +442,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
                                 onCancelRoute = cancelRouteAction
                             )
                         }
@@ -423,6 +475,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
                                 onCancelRoute = cancelRouteAction
                             )
                             "GOOGLE" -> GoogleViewport(
@@ -432,6 +485,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
                                 onCancelRoute = cancelRouteAction
                             )
                         }
@@ -469,7 +523,11 @@ fun TeslaLayout() {
             BackHandler { isSettingsOpen = false }
             SettingsScreen(
                 onClose = { isSettingsOpen = false },
-                currentMapEngine = currentMapEngine, onMapEngineChange = { newEngine -> currentMapEngine = newEngine; sharedPrefs.edit().putString("map_engine", newEngine).apply() },
+                currentMapEngine = currentMapEngine, onMapEngineChange = { newEngine ->
+                    currentMapEngine = newEngine;
+                    sharedPrefs.edit().putString("map_engine", newEngine).apply();
+                    cancelRouteAction() // 🌟 OPRAVA PÁDU: Smažeme trasu při přepnutí
+                },
                 currentSearchEngine = currentSearchEngine, onSearchEngineChange = { newEngine -> currentSearchEngine = newEngine; sharedPrefs.edit().putString("search_engine", newEngine).apply() },
                 currentLocation = currentGpsLocation,
                 currentObdMac = savedObdMacAddress, onObdMacChange = { newMac -> savedObdMacAddress = newMac; sharedPrefs.edit().putString("obd_mac", newMac).apply() },
@@ -529,4 +587,40 @@ fun InstrumentClusterWrapper(
 fun getBatteryLevel(context: Context): Int {
     val batteryManager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
     return batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+}
+
+private fun pointToLineDistance(p: Location, a: Location, b: Location): Float {
+    val xA = a.longitude
+    val yA = a.latitude
+    val xB = b.longitude
+    val yB = b.latitude
+    val xP = p.longitude
+    val yP = p.latitude
+
+    val dx = xB - xA
+    val dy = yB - yA
+
+    // Pokud jsou body A a B na stejném místě
+    if (dx == 0.0 && dy == 0.0) {
+        return p.distanceTo(a)
+    }
+
+    // Výpočet průmětu bodu P na přímku AB
+    val t = ((xP - xA) * dx + (yP - yA) * dy) / (dx * dx + dy * dy)
+
+    // Omezení úsečkou (bod je mimo úsek = měříme k začátku nebo konci)
+    if (t <= 0.0) return p.distanceTo(a)
+    if (t >= 1.0) return p.distanceTo(b)
+
+    // Nalezení přesného nejbližšího bodu na čáře
+    val closestLat = yA + t * dy
+    val closestLon = xA + t * dx
+
+    val closestPoint = Location("").apply {
+        latitude = closestLat
+        longitude = closestLon
+    }
+
+    // Android Location nám pak vrátí naprosto přesnou vzdálenost v metrech
+    return p.distanceTo(closestPoint)
 }

@@ -80,6 +80,7 @@ fun Viewport(
     onInstructionUpdated: (List<NavInstruction>) -> Unit,
     onRouteDurationUpdated: (Int?) -> Unit,
     onSpeedLimitsUpdated: (List<Int?>) -> Unit,
+    onDestinationSet: (Point?) -> Unit, // 🌟 PŘIDANÝ PARAMETR
     onCancelRoute: () -> Unit
 ) {
     val context = LocalContext.current
@@ -109,6 +110,8 @@ fun Viewport(
         suggestions = emptyList()
         searchQuery = ""
 
+        onDestinationSet(destinationPoint) // 🌟 ODESLÁNÍ CÍLE DO MAIN ACTIVITY
+
         val tPitch = if (is3dModeExternal) 60.0 else 0.0
         val tZoom = if (is3dModeExternal) 16.0 else 13.0
         val tBear = if (is3dModeExternal) FollowPuckViewportStateBearing.SyncWithLocationPuck else FollowPuckViewportStateBearing.Constant(0.0)
@@ -134,7 +137,6 @@ fun Viewport(
         if (uiAlpha > 0f) {
             Box(modifier = Modifier.fillMaxSize().alpha(uiAlpha)) {
 
-                // 🌟 OPRAVENO: Tlačítko CANCEL je vytažené do rohu, aby nedeformovalo SearchBar
                 if (routeGeoJson != null) {
                     IconButton(
                         onClick = onCancelRoute,
@@ -148,7 +150,6 @@ fun Viewport(
                     }
                 }
 
-                // 🌟 OPRAVENO: Vrácen původní hezký SearchBar nezávisle na tlačítku
                 Column(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).fillMaxWidth(0.55f)) {
                     TeslaSearchBar(
                         query = searchQuery,
@@ -192,6 +193,7 @@ fun GoogleViewport(
     onInstructionUpdated: (List<NavInstruction>) -> Unit,
     onRouteDurationUpdated: (Int?) -> Unit,
     onSpeedLimitsUpdated: (List<Int?>) -> Unit,
+    onDestinationSet: (Point?) -> Unit, // 🌟 PŘIDANÝ PARAMETR
     onCancelRoute: () -> Unit
 ) {
     val context = LocalContext.current
@@ -230,6 +232,8 @@ fun GoogleViewport(
         suggestions = emptyList()
         searchQuery = ""
 
+        onDestinationSet(destinationPoint) // 🌟 ODESLÁNÍ CÍLE DO MAIN ACTIVITY
+
         scope.launch {
             val tTilt = if (is3dModeExternal) 60f else 0f
             val tZoom = if (is3dModeExternal) 16f else 13f
@@ -261,7 +265,6 @@ fun GoogleViewport(
         if (uiAlpha > 0f) {
             Box(modifier = Modifier.fillMaxSize().alpha(uiAlpha)) {
 
-                // 🌟 OPRAVENO: Tlačítko CANCEL je vytažené do rohu, aby nedeformovalo SearchBar
                 if (routeGeoJson != null) {
                     IconButton(
                         onClick = onCancelRoute,
