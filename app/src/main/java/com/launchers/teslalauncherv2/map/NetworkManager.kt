@@ -96,11 +96,21 @@ object NetworkManager {
 
         val accessToken = context.getString(R.string.mapbox_access_token)
 
-        // Přidáno annotations=maxspeed
-        val url = "https://api.mapbox.com/directions/v5/mapbox/driving-traffic/" +
-                "${origin.longitude()},${origin.latitude()};${destination.longitude()},${destination.latitude()}" +
-                "?geometries=geojson&steps=true&overview=full&annotations=maxspeed&access_token=$accessToken"
+        val urlBuilder = HttpUrl.Builder()
+            .scheme("https")
+            .host("api.mapbox.com")
+            .addPathSegment("directions")
+            .addPathSegment("v5")
+            .addPathSegment("mapbox")
+            .addPathSegment("driving-traffic")
+            .addPathSegment("${origin.longitude()},${origin.latitude()};${destination.longitude()},${destination.latitude()}")
+            .addQueryParameter("geometries", "geojson")
+            .addQueryParameter("steps", "true")
+            .addQueryParameter("overview", "full")
+            .addQueryParameter("annotations", "maxspeed,congestion") // 🌟 PŘIDÁNA CONGESTION
+            .addQueryParameter("access_token", accessToken)
 
+        val url = urlBuilder.build().toString()
         val request = Request.Builder().url(url).build()
 
         client.newCall(request).enqueue(object : Callback {
@@ -121,29 +131,62 @@ object NetworkManager {
                         val routes = json.optJSONArray("routes")
                         if (routes != null && routes.length() > 0) {
                             val route = routes.getJSONObject(0)
-                            val geometry = route.getJSONObject("geometry")
-                            val featureString = """{ "type": "FeatureCollection", "features": [{ "type": "Feature", "properties": {}, "geometry": $geometry }] }"""
-
                             val durationSeconds = route.optDouble("duration", 0.0).toInt()
+                            val geometry = route.getJSONObject("geometry")
+
+                            val legs = route.getJSONArray("legs")
+                            var maxspeedArray: org.json.JSONArray? = null
+                            var congestionArray: org.json.JSONArray? = null
+
+                            if (legs.length() > 0) {
+                                val annotation = legs.getJSONObject(0).optJSONObject("annotation")
+                                maxspeedArray = annotation?.optJSONArray("maxspeed")
+                                congestionArray = annotation?.optJSONArray("congestion")
+                            }
+
+                            // 🌟 ROZSEKÁNÍ TRASY NA SEGMENTY PRO OBARVENÍ
+                            val coordinates = geometry.getJSONArray("coordinates")
+                            val featuresArray = org.json.JSONArray()
+
+                            for (i in 0 until coordinates.length() - 1) {
+                                val p1 = coordinates.getJSONArray(i)
+                                val p2 = coordinates.getJSONArray(i + 1)
+                                val level = congestionArray?.optString(i, "unknown") ?: "unknown"
+
+                                val segmentCoords = org.json.JSONArray().apply { put(p1); put(p2) }
+                                val segmentGeometry = JSONObject().apply {
+                                    put("type", "LineString")
+                                    put("coordinates", segmentCoords)
+                                }
+                                val properties = JSONObject().apply {
+                                    put("congestion", level)
+                                }
+                                val feature = JSONObject().apply {
+                                    put("type", "Feature")
+                                    put("properties", properties)
+                                    put("geometry", segmentGeometry)
+                                }
+                                featuresArray.put(feature)
+                            }
+
+                            val featureCollection = JSONObject().apply {
+                                put("type", "FeatureCollection")
+                                put("features", featuresArray)
+                            }
+                            val featureString = featureCollection.toString()
 
                             // 🌟 PARSOVÁNÍ RYCHLOSTÍ
                             val speedLimits = mutableListOf<Int?>()
-                            val legs = route.getJSONArray("legs")
-                            if (legs.length() > 0) {
-                                val annotation = legs.getJSONObject(0).optJSONObject("annotation")
-                                val maxspeedArray = annotation?.optJSONArray("maxspeed")
-
-                                if (maxspeedArray != null) {
-                                    for (k in 0 until maxspeedArray.length()) {
-                                        val item = maxspeedArray.get(k)
-                                        if (item is JSONObject) {
-                                            val s = item.optInt("speed", 0)
-                                            speedLimits.add(if (s > 0) s else null)
-                                        } else if (item.toString() == "none") {
-                                            speedLimits.add(-1)
-                                        } else {
-                                            speedLimits.add(null)
-                                        }
+                            if (maxspeedArray != null) {
+                                for (k in 0 until maxspeedArray.length()) {
+                                    val item = maxspeedArray.optJSONObject(k)
+                                    if (item != null) {
+                                        val speed = item.optInt("speed", 0)
+                                        speedLimits.add(if (speed > 0) speed else null)
+                                    } else if (maxspeedArray.optString(k) == "none") {
+                                        speedLimits.add(-1)
+                                    } else {
+                                        speedLimits.add(null)
                                     }
                                 }
                             }
