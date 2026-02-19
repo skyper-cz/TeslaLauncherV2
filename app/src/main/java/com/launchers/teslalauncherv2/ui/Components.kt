@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -62,21 +63,16 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 
-// HELPER FUNCTIONS
-
-// Formats meters into a readable string (m or km)
 fun formatDistance(meters: Int): String {
     return if (meters >= 1000) String.format(Locale.US, "%.1f km", meters / 1000f) else "$meters m"
 }
 
-// Dispatches media key events to the system (Play/Pause, Next, Prev)
 fun sendMediaKeyEvent(context: Context, keyCode: Int) {
     val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
     audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
 }
 
-// Calculates a bounding box geometry around a given route for offline downloading
 fun getRouteBoundingBox(routeGeoJson: String, bufferDegrees: Double = 0.05): com.mapbox.geojson.Geometry? {
     try {
         val lineString = com.mapbox.geojson.FeatureCollection.fromJson(routeGeoJson).features()?.firstOrNull()?.geometry() as? com.mapbox.geojson.LineString
@@ -103,14 +99,9 @@ fun getRouteBoundingBox(routeGeoJson: String, bufferDegrees: Double = 0.05): com
 }
 
 
-// UI COMPONENTS
-
-// 🌟 NEW: Renders the speed limit sign (supports numeric and "Unlimited" German style)
 @Composable
 fun SpeedLimitSign(limit: Int, modifier: Modifier = Modifier) {
-    // If limit is -1 (or effectively 0/very high), it implies no limit (German Autobahn)
     if (limit <= 0 || limit > 150) {
-        // German "End of all restrictions" sign (Zeichen 282)
         Box(
             modifier = modifier
                 .background(Color.White, CircleShape)
@@ -119,7 +110,6 @@ fun SpeedLimitSign(limit: Int, modifier: Modifier = Modifier) {
         ) {
             Canvas(modifier = Modifier.fillMaxSize()) {
                 val strokeWidth = 3.dp.toPx()
-                // Draw 3 diagonal black lines
                 for (i in 1..3) {
                     val offset = i * 0.15f
                     drawLine(
@@ -133,7 +123,6 @@ fun SpeedLimitSign(limit: Int, modifier: Modifier = Modifier) {
             }
         }
     } else {
-        // Standard Euro-style speed limit (Red circle, white bg, black text)
         Box(
             modifier = modifier
                 .background(Color.White, CircleShape)
@@ -150,170 +139,162 @@ fun SpeedLimitSign(limit: Int, modifier: Modifier = Modifier) {
     }
 }
 
-// Main dashboard panel displaying speed, RPM, and navigation
 @Composable
 fun InstrumentCluster(
     modifier: Modifier = Modifier,
-    isLandscape: Boolean = false,
+    isLandscape: Boolean,
     carState: CarState,
     gpsStatus: String?,
     batteryLevel: Int,
     instruction: NavInstruction?,
-    currentNavDistance: Int? = null,
-    routeDuration: Int? = null,
-    speedLimit: Int? = null,
-    showSpeedLimit: Boolean = true, // 🌟 NEW: User preference toggle
-    onCancelRoute: () -> Unit = {}
+    currentNavDistance: Int?,
+    routeDuration: Int?,
+    speedLimit: Int?,
+    showSpeedLimit: Boolean
 ) {
-    // Determine if the vehicle is speeding to color the text red
-    val isSpeeding = speedLimit != null && speedLimit > 0 && carState.speed > speedLimit + 5 // +5 tolerance
-    val speedColor = if (isSpeeding) Color(0xFFFF4444) else Color.White
+    Box(
+        modifier = modifier
+            .background(Color(0xFF111111))
+            .padding(16.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
 
-    Column(modifier = modifier.fillMaxWidth().background(Color.Black).padding(16.dp)) {
-        TopStatusBar(gpsStatus, carState.isConnected, carState.isDemoMode, batteryLevel, carState.error)
-
-        if (isLandscape) {
-            // Landscape layout: Nav top, Speed/RPM bottom
-            Column(modifier = Modifier.fillMaxSize().padding(top = 16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                if (instruction != null) {
-                    NavigationDisplay(instruction, currentNavDistance ?: instruction.distance, routeDuration, onCancelRoute)
-                    Spacer(modifier = Modifier.height(16.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                // LEVÁ STRANA
+                Column(horizontalAlignment = Alignment.Start) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(imageVector = if (carState.isConnected) Icons.Default.BluetoothConnected else Icons.Default.BluetoothDisabled, contentDescription = "OBD", tint = if (carState.isConnected) Color.Cyan else Color.Gray, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        if (gpsStatus != null) {
+                            Text(text = gpsStatus, color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.BatteryFull, contentDescription = "Battery", tint = if (batteryLevel < 20) Color.Red else Color.Green, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(text = "$batteryLevel%", color = Color.White, fontSize = 14.sp)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(text = "${carState.coolantTemp}°C", color = if (carState.coolantTemp > 105) Color.Red else Color.White, fontSize = 14.sp)
+                    }
                 }
 
-                Spacer(modifier = Modifier.weight(1f))
-
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    // 🌟 UPDATED: Display dynamic speed limit sign
+                // PRAVÁ STRANA: Značka a rychlost
+                Column(horizontalAlignment = Alignment.End) {
                     if (showSpeedLimit && speedLimit != null) {
-                        SpeedLimitSign(limit = speedLimit, modifier = Modifier.size(42.dp))
+                        SpeedLimitSign(limit = speedLimit, modifier = Modifier.size(40.dp))
                         Spacer(modifier = Modifier.height(4.dp))
                     }
 
-                    // 🌟 SPEEDOMETER FIX: maxLines and fixed line height prevent layout jumps
-                    Text(
-                        text = "${carState.speed}",
-                        fontSize = 80.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = speedColor,
-                        letterSpacing = (-2).sp,
-                        maxLines = 1,          // Never wrap
-                        softWrap = false,      // Disable soft wrap
-                        lineHeight = 80.sp     // Fix line height to stop numbers jumping
-                    )
-                    Text(text = "KM/H", fontSize = 14.sp, color = Color.Gray, fontWeight = FontWeight.SemiBold)
+                    // 🌟 OPRAVA: Zčervenání rychlosti při překročení
+                    val isSpeeding = speedLimit != null && speedLimit > 0 && carState.speed > speedLimit
+                    val currentSpeedColor = if (isSpeeding) Color.Red else Color.White
+
+                    Row(verticalAlignment = Alignment.Bottom) {
+                        Text(
+                            text = carState.speed.toString(),
+                            color = currentSpeedColor, // 🌟 Použití dynamické barvy
+                            fontSize = 72.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(text = "km/h", color = Color.Gray, fontSize = 16.sp, modifier = Modifier.padding(bottom = 12.dp))
+                    }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // 🌟 TADY JE NOVĚ PŘIDANÝ RPM BAR
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
                 RpmBar(rpm = carState.rpm)
             }
-        } else {
-            // Portrait layout: Nav/RPM left, Speed right
+
             Spacer(modifier = Modifier.height(16.dp))
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
-                    if (instruction != null) {
-                        NavigationDisplay(instruction, currentNavDistance ?: instruction.distance, routeDuration, onCancelRoute)
-                        Spacer(modifier = Modifier.height(16.dp))
-                    }
-                    RpmBar(rpm = carState.rpm)
-                }
-                Column(modifier = Modifier.weight(0.6f), horizontalAlignment = Alignment.End) {
-                    if (carState.coolantTemp > 0) Text(text = "${carState.coolantTemp}°C", color = Color.Gray, fontSize = 14.sp)
 
-                    // 🌟 ALIGNMENT FIX FOR PORTRAIT MODE
-                    Row(
-                        verticalAlignment = Alignment.Bottom, // Align to text baseline
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        if (showSpeedLimit && speedLimit != null) {
-                            // Align sign vertically with the speed text
-                            Box(modifier = Modifier.align(Alignment.CenterVertically)) {
-                                SpeedLimitSign(limit = speedLimit, modifier = Modifier.size(36.dp))
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                        }
-
-                        Text(
-                            text = "${carState.speed}",
-                            fontSize = 80.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = speedColor,
-                            letterSpacing = (-2).sp,
-                            maxLines = 1,
-                            softWrap = false,
-                            lineHeight = 80.sp,
-                            modifier = Modifier.alignByBaseline() // Critical for aligning digits
-                        )
-                    }
-                    Text(text = "KM/H", fontSize = 14.sp, color = Color.Gray, fontWeight = FontWeight.SemiBold)
+            if (instruction != null) {
+                Box(modifier = Modifier.fillMaxWidth().background(Color(0xFF222222), RoundedCornerShape(12.dp)).padding(16.dp)) {
+                    NavigationDisplay(
+                        instruction = instruction,
+                        currentDistance = currentNavDistance ?: instruction.distance,
+                        routeDurationSeconds = routeDuration
+                    )
                 }
             }
         }
     }
 }
 
-// ... (Rest of UI components: TopStatusBar, NavigationDisplay, TeslaSearchBar, RpmBar, WideMusicPlayer, Dock, AppMenuItem, GearSelector) ...
 @Composable
-fun TopStatusBar(gpsStatus: String?, isConnected: Boolean, isDemoMode: Boolean, batteryLevel: Int, carError: String?) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (gpsStatus != null) {
-                Text(text = gpsStatus, color = Color.White, modifier = Modifier.background(Color.DarkGray, RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.width(8.dp))
-            }
-            if (isConnected) Icon(Icons.Default.BluetoothConnected, "OBD", tint = Color.Green, modifier = Modifier.size(20.dp))
-            else if (isDemoMode) Text("DEMO", color = Color.Cyan, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-
-            if (carError != null) {
-                Spacer(modifier = Modifier.width(8.dp))
-                Row(modifier = Modifier.background(Color(0xFF440000), RoundedCornerShape(4.dp)).padding(horizontal = 6.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Warning, null, tint = Color.Yellow, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("ERR: $carError", color = Color.Yellow, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
+fun NavigationDisplay(instruction: NavInstruction, currentDistance: Int, routeDurationSeconds: Int? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 1. Šipka manévru
+        val icon = when {
+            instruction.modifier?.contains("left") == true -> Icons.AutoMirrored.Filled.ArrowBack
+            instruction.modifier?.contains("right") == true -> Icons.AutoMirrored.Filled.ArrowForward
+            else -> Icons.Default.Navigation
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(text = "$batteryLevel%", color = if (batteryLevel < 20) Color.Red else Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.width(4.dp))
-            Icon(if (batteryLevel > 20) Icons.Default.BatteryFull else Icons.Default.BatteryAlert, "Bat", tint = if (batteryLevel < 20) Color.Red else Color.Green, modifier = Modifier.size(20.dp))
-        }
-    }
-}
+        Icon(icon, "Nav", tint = Color.Cyan, modifier = Modifier.size(42.dp))
+        Spacer(modifier = Modifier.width(16.dp))
 
-@Composable
-fun NavigationDisplay(instruction: NavInstruction, currentDistance: Int, routeDurationSeconds: Int? = null, onCancelRoute: () -> Unit) {
-    Column(horizontalAlignment = Alignment.Start, modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val icon = when {
-                    instruction.modifier?.contains("left") == true -> Icons.AutoMirrored.Filled.ArrowBack
-                    instruction.modifier?.contains("right") == true -> Icons.AutoMirrored.Filled.ArrowForward
-                    else -> Icons.Default.Navigation
-                }
-                Icon(icon, "Nav", tint = Color.Cyan, modifier = Modifier.size(28.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(text = formatDistance(currentDistance), color = Color.Cyan, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-            }
-            IconButton(onClick = onCancelRoute, modifier = Modifier.background(Color(0xFF330000), RoundedCornerShape(50)).size(32.dp)) {
-                Icon(Icons.Default.Close, "Cancel", tint = Color.Red, modifier = Modifier.size(16.dp))
-            }
+        // 2. Instrukce a vzdálenost (uprostřed)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = instruction.text,
+                color = Color.White,
+                fontSize = 18.sp,
+                maxLines = 1,
+                fontWeight = FontWeight.Bold,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = formatDistance(currentDistance),
+                color = Color.Cyan,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                softWrap = false
+            )
         }
-        Text(text = instruction.text, color = Color.White, fontSize = 16.sp, maxLines = 2, fontWeight = FontWeight.Medium, overflow = TextOverflow.Ellipsis)
 
+        // 3. Čas a ETA (zarovnané doprava na úroveň textu)
         if (routeDurationSeconds != null && routeDurationSeconds > 0) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(modifier = Modifier.background(Color(0xFF1E1E1E), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
                 val etaCalendar = Calendar.getInstance().apply { add(Calendar.SECOND, routeDurationSeconds) }
                 val etaFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-                val durationText = if (routeDurationSeconds / 3600 > 0) "${routeDurationSeconds / 3600}h ${(routeDurationSeconds / 60) % 60}m" else "${(routeDurationSeconds / 60) % 60} min"
+                val durationText = if (routeDurationSeconds / 3600 > 0) {
+                    "${routeDurationSeconds / 3600}h ${(routeDurationSeconds / 60) % 60}m"
+                } else {
+                    "${(routeDurationSeconds / 60) % 60} min"
+                }
 
-                Icon(Icons.Default.Schedule, null, tint = Color.Gray, modifier = Modifier.size(14.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(text = etaFormat.format(etaCalendar.time), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(text = "·", color = Color.Gray, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(text = durationText, color = Color.Green, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                Text(
+                    text = "ETA ${etaFormat.format(etaCalendar.time)}",
+                    color = Color.Gray,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = durationText,
+                    color = Color.Green,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
         }
     }

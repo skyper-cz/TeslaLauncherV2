@@ -10,8 +10,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material3.*
@@ -77,7 +79,8 @@ fun Viewport(
     onRouteGeoJsonUpdated: (String?) -> Unit,
     onInstructionUpdated: (List<NavInstruction>) -> Unit,
     onRouteDurationUpdated: (Int?) -> Unit,
-    onSpeedLimitsUpdated: (List<Int?>) -> Unit
+    onSpeedLimitsUpdated: (List<Int?>) -> Unit,
+    onCancelRoute: () -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -127,10 +130,32 @@ fun Viewport(
     Box(modifier = modifier.fillMaxWidth().background(Color.DarkGray)) {
         TeslaMap(modifier = Modifier.fillMaxSize(), mapViewportState = mapViewportState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal)
         val uiAlpha by animateFloatAsState(targetValue = if (isNightPanel) 0f else 1f, label = "UI Fade")
+
         if (uiAlpha > 0f) {
             Box(modifier = Modifier.fillMaxSize().alpha(uiAlpha)) {
-                Column(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).fillMaxWidth(0.6f)) {
-                    TeslaSearchBar(query = searchQuery, onQueryChange = { searchQuery = it }, onSearch = { if (suggestions.isNotEmpty()) performSearchAndRoute(suggestions.first().point) })
+
+                // 🌟 OPRAVENO: Tlačítko CANCEL je vytažené do rohu, aby nedeformovalo SearchBar
+                if (routeGeoJson != null) {
+                    IconButton(
+                        onClick = onCancelRoute,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(start = 24.dp, top = 16.dp)
+                            .size(50.dp)
+                            .background(Color(0xFF8B0000), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancel Route", tint = Color.White)
+                    }
+                }
+
+                // 🌟 OPRAVENO: Vrácen původní hezký SearchBar nezávisle na tlačítku
+                Column(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).fillMaxWidth(0.55f)) {
+                    TeslaSearchBar(
+                        query = searchQuery,
+                        onQueryChange = { searchQuery = it },
+                        onSearch = { if (suggestions.isNotEmpty()) performSearchAndRoute(suggestions.first().point) }
+                    )
+
                     if (suggestions.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 250.dp).background(Color.Black.copy(alpha = 0.95f), shape = RoundedCornerShape(16.dp))) {
@@ -166,7 +191,8 @@ fun GoogleViewport(
     onRouteGeoJsonUpdated: (String?) -> Unit,
     onInstructionUpdated: (List<NavInstruction>) -> Unit,
     onRouteDurationUpdated: (Int?) -> Unit,
-    onSpeedLimitsUpdated: (List<Int?>) -> Unit
+    onSpeedLimitsUpdated: (List<Int?>) -> Unit,
+    onCancelRoute: () -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -218,12 +244,10 @@ fun GoogleViewport(
         val currentPoint = if (currentLocation != null) Point.fromLngLat(currentLocation.longitude, currentLocation.latitude) else Point.fromLngLat(cameraPositionState.position.target.longitude, cameraPositionState.position.target.latitude)
 
         if (searchEngine == "GOOGLE") {
-            // 🌟 OPRAVA: Přidán 4. parametr 'limits' (ignorujeme ho pomocí '_')
             NetworkManager.fetchGoogleRoute(currentPoint, destinationPoint, googleApiKey) { geo, instr, dur, limits ->
                 scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur); onSpeedLimitsUpdated(limits) }
             }
         } else {
-            // 🌟 OPRAVA: Přidán 4. parametr 'limits' (ignorujeme ho pomocí '_')
             NetworkManager.fetchRouteManual(currentPoint, destinationPoint, context) { geo, instr, dur, limits ->
                 scope.launch(Dispatchers.Main) { onRouteGeoJsonUpdated(geo); onInstructionUpdated(instr); onRouteDurationUpdated(dur); onSpeedLimitsUpdated(limits) }
             }
@@ -233,10 +257,31 @@ fun GoogleViewport(
     Box(modifier = modifier.fillMaxWidth().background(Color.DarkGray)) {
         GoogleMapDisplay(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal)
         val uiAlpha by animateFloatAsState(targetValue = if (isNightPanel) 0f else 1f, label = "UI Fade")
+
         if (uiAlpha > 0f) {
             Box(modifier = Modifier.fillMaxSize().alpha(uiAlpha)) {
-                Column(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).fillMaxWidth(0.6f)) {
-                    TeslaSearchBar(query = searchQuery, onQueryChange = { searchQuery = it }, onSearch = { if (suggestions.isNotEmpty()) performSearchAndRoute(suggestions.first().point) })
+
+                // 🌟 OPRAVENO: Tlačítko CANCEL je vytažené do rohu, aby nedeformovalo SearchBar
+                if (routeGeoJson != null) {
+                    IconButton(
+                        onClick = onCancelRoute,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(start = 24.dp, top = 16.dp)
+                            .size(50.dp)
+                            .background(Color(0xFF8B0000), CircleShape)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancel Route", tint = Color.White)
+                    }
+                }
+
+                Column(modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).fillMaxWidth(0.55f)) {
+                    TeslaSearchBar(
+                        query = searchQuery,
+                        onQueryChange = { searchQuery = it },
+                        onSearch = { if (suggestions.isNotEmpty()) performSearchAndRoute(suggestions.first().point) }
+                    )
+
                     if (suggestions.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(8.dp))
                         LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 250.dp).background(Color.Black.copy(alpha = 0.95f), shape = RoundedCornerShape(16.dp))) {
@@ -249,6 +294,7 @@ fun GoogleViewport(
                         }
                     }
                 }
+
                 FloatingActionButton(onClick = {
                     scope.launch {
                         val tTilt = if (is3dModeExternal) 60f else 0f
