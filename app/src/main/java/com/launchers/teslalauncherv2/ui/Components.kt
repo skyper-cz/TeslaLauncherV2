@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.view.KeyEvent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -57,6 +58,7 @@ import androidx.core.app.NotificationManagerCompat
 import com.launchers.teslalauncherv2.data.CarState
 import com.launchers.teslalauncherv2.data.NavInstruction
 import com.launchers.teslalauncherv2.data.createBBoxGeometry
+import com.launchers.teslalauncherv2.data.DTCManager // 🌟 Přidán import pro čtení chyb
 import com.launchers.teslalauncherv2.media.MediaManager
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -152,9 +154,20 @@ fun InstrumentCluster(
     speedLimit: Int?,
     showSpeedLimit: Boolean
 ) {
+    // 🌟 LOGIKA ŠUPLÍKU
+    val hasError = !carState.error.isNullOrEmpty()
+    var isDrawerExpanded by remember { mutableStateOf(false) }
+
+    // Pokud chyba zmizí, šuplík automaticky zavřeme
+    LaunchedEffect(hasError) {
+        if (!hasError) isDrawerExpanded = false
+    }
+
     Box(
         modifier = modifier
             .background(Color(0xFF111111))
+            .animateContentSize() // 🌟 Animace plynulého roztahování
+            .clickable(enabled = hasError) { isDrawerExpanded = !isDrawerExpanded } // Klikat jde jen když je chyba
             .padding(16.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -181,6 +194,20 @@ fun InstrumentCluster(
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(text = "${carState.coolantTemp}°C", color = if (carState.coolantTemp > 105) Color.Red else Color.White, fontSize = 14.sp)
                     }
+
+                    // 🌟 NOVÝ INDIKÁTOR CHYBY (v zavřeném stavu)
+                    if (hasError) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            val isCritical = DTCManager.isCritical(carState.error)
+                            val errColor = if (isCritical) Color.Red else Color(0xFFCC8800)
+                            Icon(Icons.Default.Warning, contentDescription = "Error", tint = errColor, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (isCritical) "CRITICAL FAULT" else "VEHICLE ALERT", color = errColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(if (isDrawerExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, contentDescription = "Expand", tint = Color.Gray, modifier = Modifier.size(18.dp))
+                        }
+                    }
                 }
 
                 // PRAVÁ STRANA: Značka a rychlost
@@ -190,14 +217,13 @@ fun InstrumentCluster(
                         Spacer(modifier = Modifier.height(4.dp))
                     }
 
-                    // 🌟 OPRAVA: Zčervenání rychlosti při překročení
                     val isSpeeding = speedLimit != null && speedLimit > 0 && carState.speed > speedLimit
                     val currentSpeedColor = if (isSpeeding) Color.Red else Color.White
 
                     Row(verticalAlignment = Alignment.Bottom) {
                         Text(
                             text = carState.speed.toString(),
-                            color = currentSpeedColor, // 🌟 Použití dynamické barvy
+                            color = currentSpeedColor,
                             fontSize = 72.sp,
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
@@ -211,7 +237,6 @@ fun InstrumentCluster(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // 🌟 TADY JE NOVĚ PŘIDANÝ RPM BAR
             Box(
                 modifier = Modifier.fillMaxWidth(),
                 contentAlignment = Alignment.Center
@@ -228,6 +253,36 @@ fun InstrumentCluster(
                         currentDistance = currentNavDistance ?: instruction.distance,
                         routeDurationSeconds = routeDuration
                     )
+                }
+            }
+
+            // 🌟 ROZBALENÝ ŠUPLÍK S DETAILEM CHYBY
+            AnimatedVisibility(visible = isDrawerExpanded && hasError) {
+                Column(modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
+                    HorizontalDivider(color = Color.DarkGray)
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    val desc = DTCManager.getDescription(carState.error)
+                    val isCritical = DTCManager.isCritical(carState.error)
+                    val bgColor = if (isCritical) Color(0xFF550000) else Color(0xFF664400)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(bgColor, RoundedCornerShape(12.dp))
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Build, contentDescription = "Repair", tint = Color.White, modifier = Modifier.size(32.dp))
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(carState.error ?: "", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                            Text(desc, color = Color.LightGray, fontSize = 14.sp)
+                        }
+                        IconButton(onClick = { isDrawerExpanded = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Close Drawer", tint = Color.White)
+                        }
+                    }
                 }
             }
         }
