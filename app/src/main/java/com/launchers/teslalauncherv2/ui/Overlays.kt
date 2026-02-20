@@ -152,17 +152,17 @@ fun NightPanelScreen(speed: Int, rpm: Int, error: String?, instruction: NavInstr
             // Show RPM only if revving high
             if (rpm > 3500) { Spacer(modifier = Modifier.height(24.dp)); Text(text = "$rpm RPM", color = Color(0xFFBB0000), fontSize = 32.sp, fontWeight = FontWeight.Bold) }
 
-            // Display engine fault code if detected
-            if (!error.isNullOrEmpty()) { TeslaErrorAlert(errorCode = error) {
-                // Zde můžeme přidat logiku pro skrytí (např. vymazání chyby z paměti)
-            }}
+            // 🌟 ZMĚNA: V noci jen tichá ikona varování, bez textu!
+            if (!error.isNullOrEmpty()) {
+                Spacer(modifier = Modifier.height(24.dp))
+                Icon(Icons.Default.Warning, contentDescription = "Engine Error", tint = Color(0xFFCC8800), modifier = Modifier.size(64.dp))
+            }
         }
         // Tap area to exit night mode
         Box(modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.15f).background(Color.Transparent).clickable { onExit() }, contentAlignment = Alignment.Center) { Text("TAP TO WAKE", color = Color(0xFF111111), fontSize = 10.sp, modifier = Modifier.padding(bottom = 16.dp)) }
     }
 }
 
-// Global settings menu for map engines, offline maps, and OBD config
 // Global settings menu for map engines, offline maps, and OBD config
 @Composable
 fun SettingsScreen(
@@ -290,6 +290,30 @@ fun SettingsScreen(
                     }, colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan, checkedTrackColor = Color(0xFF004444)))
                 }
 
+                // Automatic Gear Shift Toggle
+                var isAutoShiftEnabled by remember { mutableStateOf(context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).getBoolean("auto_shift_gear", true)) }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(12.dp)).padding(16.dp).clickable {
+                        isAutoShiftEnabled = !isAutoShiftEnabled
+                        context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("auto_shift_gear", isAutoShiftEnabled).apply()
+                    },
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.DirectionsCar, null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text("Automatic Gear Shift", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Auto switch P/D based on speed", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                    Switch(checked = isAutoShiftEnabled, onCheckedChange = {
+                        isAutoShiftEnabled = it
+                        context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("auto_shift_gear", it).apply()
+                    }, colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan, checkedTrackColor = Color(0xFF004444)))
+                }
+
                 HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 8.dp))
 
                 // 2. MAP & NAVIGATION
@@ -301,6 +325,30 @@ fun SettingsScreen(
                         Button(onClick = { onMapEngineChange("MAPBOX") }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = if (currentMapEngine == "MAPBOX") Color.White else Color(0xFF333333), contentColor = if (currentMapEngine == "MAPBOX") Color.Black else Color.White)) { Text("MAPBOX") }
                         Button(onClick = { onMapEngineChange("GOOGLE") }, modifier = Modifier.weight(1f), colors = ButtonDefaults.buttonColors(containerColor = if (currentMapEngine == "GOOGLE") Color.White else Color(0xFF333333), contentColor = if (currentMapEngine == "GOOGLE") Color.Black else Color.White)) { Text("GOOGLE") }
                     }
+                }
+
+                // 3D Buildings Toggle
+                var is3dBuildingsEnabled by remember { mutableStateOf(context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).getBoolean("show_3d_buildings", true)) }
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFF2A2A2A), RoundedCornerShape(12.dp)).padding(16.dp).clickable {
+                        is3dBuildingsEnabled = !is3dBuildingsEnabled
+                        context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("show_3d_buildings", is3dBuildingsEnabled).apply()
+                    },
+                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Domain, null, tint = Color.White)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text("3D Buildings", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Turn off to improve device performance", color = Color.Gray, fontSize = 12.sp)
+                        }
+                    }
+                    Switch(checked = is3dBuildingsEnabled, onCheckedChange = {
+                        is3dBuildingsEnabled = it
+                        context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("show_3d_buildings", it).apply()
+                    }, colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan, checkedTrackColor = Color(0xFF004444)))
                 }
 
                 HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 8.dp))
@@ -339,7 +387,6 @@ fun SettingsScreen(
                             }) { Icon(Icons.Default.Delete, null, tint = Color.Red) }
                         } else if (currentRouteGeoJson != null) {
                             IconButton(onClick = {
-                                // 🌟 OPRAVA: PŘEKLEP BYL ZDE (getRouteBoundingBox)
                                 val routeGeometry = getRouteBoundingBox(currentRouteGeoJson)
                                 if (routeGeometry != null) {
                                     isDownloadingRoute = true
@@ -493,6 +540,8 @@ fun SettingsScreen(
     }
 }
 
+// 🌟 ZMĚNA: Tuto komponentu už v MainActivity nevoláme (vyskakovací okna jsou zrušená),
+// ale pro jistotu ji tu zatím necháme zachovanou v kódu, kdyby ses k ní chtěl někdy vrátit.
 @Composable
 fun TeslaErrorAlert(
     errorCode: String?,
@@ -503,23 +552,21 @@ fun TeslaErrorAlert(
     val description = remember(errorCode) { DTCManager.getDescription(errorCode) }
     val isCritical = remember(errorCode) { DTCManager.isCritical(errorCode) }
 
-    // Barva: Červená pro kritické, Oranžová pro varování
     val backgroundColor = if (isCritical) Color(0xFF8B0000) else Color(0xFFCC8800)
     val icon = if (isCritical) Icons.Default.Warning else Icons.Default.Info
 
-    // Zobrazíme to jako plovoucí kartu nahoře uprostřed
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 40.dp) // Aby to nebylo schované pod status barem
-            .zIndex(99f), // Vždy nahoře
+            .padding(top = 40.dp)
+            .zIndex(99f),
         contentAlignment = Alignment.TopCenter
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth(0.9f)
                 .background(backgroundColor, RoundedCornerShape(12.dp))
-                .clickable { onDismiss() } // Kliknutím zmizí
+                .clickable { onDismiss() }
                 .padding(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

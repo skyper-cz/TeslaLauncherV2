@@ -127,7 +127,11 @@ fun TeslaLayout() {
     var savedObdMacAddress by remember { mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "") }
     var currentMapEngine by remember { mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX") }
     var currentSearchEngine by remember { mutableStateOf(sharedPrefs.getString("search_engine", "MAPBOX") ?: "MAPBOX") }
+
     var showSpeedLimitSetting by remember { mutableStateOf(sharedPrefs.getBoolean("show_speed_limit", true)) }
+    var show3dBuildings by remember { mutableStateOf(sharedPrefs.getBoolean("show_3d_buildings", true)) }
+    var autoShiftGear by remember { mutableStateOf(sharedPrefs.getBoolean("auto_shift_gear", true)) }
+
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
 
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
@@ -141,9 +145,11 @@ fun TeslaLayout() {
     var isLocationPermissionGranted by remember { mutableStateOf(false) }
     var isManualOverrideActive by remember { mutableStateOf(false) }
 
+    // 🌟 PŘIDÁNO: Pípnutí při chybě
+    var lastErrorTriggered by remember { mutableStateOf<String?>(null) }
+
     val effectiveSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
 
-    // 🌟 PŘESUNUTO SEM NAHORU: Aby to LocationListener mohl používat pro Rerouting
     val handleGeoJsonUpdate: (String?) -> Unit = { geo ->
         routeGeoJson = geo
         if (geo != null) {
@@ -180,7 +186,11 @@ fun TeslaLayout() {
         currentDestination = null
     }
 
-    LaunchedEffect(isSettingsOpen) { showSpeedLimitSetting = sharedPrefs.getBoolean("show_speed_limit", true) }
+    LaunchedEffect(isSettingsOpen) {
+        showSpeedLimitSetting = sharedPrefs.getBoolean("show_speed_limit", true)
+        show3dBuildings = sharedPrefs.getBoolean("show_3d_buildings", true)
+        autoShiftGear = sharedPrefs.getBoolean("auto_shift_gear", true)
+    }
 
     LaunchedEffect(lastManualShiftTime) {
         if (lastManualShiftTime > 0) {
@@ -199,14 +209,26 @@ fun TeslaLayout() {
         }
     }
 
-    LaunchedEffect(effectiveSpeed, currentGear, isManualOverrideActive) {
+    LaunchedEffect(effectiveSpeed, currentGear, isManualOverrideActive, autoShiftGear) {
         if (currentGear == "D") is3dMapMode = true else if (currentGear == "P") is3dMapMode = false
 
-        if (!isManualOverrideActive) {
+        if (!isManualOverrideActive && autoShiftGear) {
             if (currentGear != "R") {
                 if (effectiveSpeed > 5 && currentGear != "D") currentGear = "D"
                 if (effectiveSpeed < 4 && currentGear != "P") currentGear = "P"
             }
+        }
+    }
+
+    // 🌟 PŘIDÁNO: Pípnutí při nové OBD chybě
+    LaunchedEffect(carStateSnapshot.error) {
+        if (!carStateSnapshot.error.isNullOrEmpty() && carStateSnapshot.error != lastErrorTriggered) {
+            lastErrorTriggered = carStateSnapshot.error
+            try {
+                val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100)
+                toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 400) // 400ms varovné pípnutí
+                toneGen.release()
+            } catch (e: Exception) { e.printStackTrace() }
         }
     }
 
@@ -303,7 +325,6 @@ fun TeslaLayout() {
                     val limitIndex = closestSegmentIndex.coerceAtMost(speedLimitsList.size - 1)
                     currentSpeedLimit = speedLimitsList.getOrNull(limitIndex)
 
-                    // 3. Detekce sjetí z trasy (Off-route Rerouting)
                     if (minDistance > 50f && location.accuracy < 30f && currentDestination != null && !isRerouting) {
                         isRerouting = true
                         Toast.makeText(context, "Rerouting...", Toast.LENGTH_SHORT).show()
@@ -314,7 +335,7 @@ fun TeslaLayout() {
                             NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
                                 scope.launch(Dispatchers.Main) {
                                     if (geo != null) {
-                                        handleGeoJsonUpdate(geo) // 🌟 OPRAVA: Místo "routeGeoJson = geo" nyní parsujeme i souřadnice!
+                                        handleGeoJsonUpdate(geo)
                                         navInstructionsList = instr
                                         currentRouteDuration = dur
                                         speedLimitsList = limits
@@ -328,7 +349,7 @@ fun TeslaLayout() {
                             NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
                                 scope.launch(Dispatchers.Main) {
                                     if (geo != null) {
-                                        handleGeoJsonUpdate(geo) // 🌟 OPRAVA: Zde se konečně aktualizují matematické body trasy!
+                                        handleGeoJsonUpdate(geo)
                                         navInstructionsList = instr
                                         currentRouteDuration = dur
                                         speedLimitsList = limits
@@ -424,6 +445,8 @@ fun TeslaLayout() {
                         when (currentMapEngine) {
                             "MAPBOX" -> Viewport(
                                 modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
+                                show3dBuildings = show3dBuildings,
                                 searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
                                 onRouteGeoJsonUpdated = handleGeoJsonUpdate,
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
@@ -434,6 +457,7 @@ fun TeslaLayout() {
                             )
                             "GOOGLE" -> GoogleViewport(
                                 modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
                                 searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
                                 onRouteGeoJsonUpdated = handleGeoJsonUpdate,
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
@@ -467,6 +491,8 @@ fun TeslaLayout() {
                         when (currentMapEngine) {
                             "MAPBOX" -> Viewport(
                                 modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
+                                show3dBuildings = show3dBuildings,
                                 searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
                                 onRouteGeoJsonUpdated = handleGeoJsonUpdate,
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
@@ -477,6 +503,7 @@ fun TeslaLayout() {
                             )
                             "GOOGLE" -> GoogleViewport(
                                 modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
                                 searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
                                 onRouteGeoJsonUpdated = handleGeoJsonUpdate,
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
@@ -512,9 +539,7 @@ fun TeslaLayout() {
             }
         }
 
-        if (!carStateSnapshot.error.isNullOrEmpty()) {
-            TeslaErrorAlert(errorCode = carStateSnapshot.error) { }
-        }
+        // 🌟 ZMĚNA: Tady původně bylo volání TeslaErrorAlert, které jsme smazali.
 
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }

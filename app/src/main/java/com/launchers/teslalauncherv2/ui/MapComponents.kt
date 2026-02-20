@@ -55,6 +55,7 @@ import com.mapbox.maps.plugin.locationcomponent.location
 import com.mapbox.maps.plugin.viewport.data.FollowPuckViewportStateBearing
 import com.mapbox.maps.plugin.viewport.data.FollowPuckViewportStateOptions
 import com.mapbox.maps.plugin.PuckBearing
+import com.mapbox.maps.plugin.viewport.ViewportStatus
 
 // Mapbox Style Expressions
 import com.mapbox.maps.extension.style.expressions.generated.Expression.Companion.eq
@@ -71,12 +72,15 @@ import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapUiSettings
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.google.maps.android.compose.Polyline
+import com.google.maps.android.compose.CameraMoveStartedReason
 
 @Composable
 fun Viewport(
     modifier: Modifier = Modifier,
     isNightPanel: Boolean = false,
     is3dModeExternal: Boolean = false,
+    currentNavDistance: Int? = null, // 🌟 Adaptivní Zoom: Vzdálenost k manévru
+    show3dBuildings: Boolean = true,
     searchEngine: String,
     currentLocation: Location?,
     routeGeoJson: String?,
@@ -96,19 +100,44 @@ fun Viewport(
     val scope = rememberCoroutineScope()
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
 
-    LaunchedEffect(is3dModeExternal) {
-        val tPitch = if (is3dModeExternal) 60.0 else 0.0
-        val tZoom = if (is3dModeExternal) 16.0 else 13.0
+    // Chytré centrování
+    LaunchedEffect(mapViewportState.mapViewportStatus) {
+        if (mapViewportState.mapViewportStatus == ViewportStatus.Idle) {
+            val delayMillis = if (is3dModeExternal) 5000L else 20000L
+            delay(delayMillis)
+            val tPitch = if (is3dModeExternal) 60.0 else 0.0
+            val tZoom = if (is3dModeExternal) 16.0 else 13.0
+            val tBear = if (is3dModeExternal) FollowPuckViewportStateBearing.SyncWithLocationPuck else FollowPuckViewportStateBearing.Constant(0.0)
+            val tPad = if (is3dModeExternal) EdgeInsets(800.0, 0.0, 0.0, 0.0) else EdgeInsets(0.0, 0.0, 0.0, 0.0)
+            mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().bearing(tBear).pitch(tPitch).zoom(tZoom).padding(tPad).build())
+        }
+    }
+
+    // 🌟 ZMĚNA: Adaptivní zoom a náklon podle vzdálenosti k manévru
+    LaunchedEffect(is3dModeExternal, currentNavDistance) {
+        val tPitch = if (is3dModeExternal) {
+            when {
+                currentNavDistance == null -> 60.0
+                currentNavDistance > 2000 -> 40.0 // Dálnice: kamera se zvedne, díváme se daleko
+                currentNavDistance < 600 -> 65.0  // Blížíme se: kamera jde víc shora na křižovatku
+                else -> 55.0
+            }
+        } else 0.0
+
+        val tZoom = if (is3dModeExternal) {
+            when {
+                currentNavDistance == null -> 16.0
+                currentNavDistance > 2000 -> 14.5 // Oddálení pro lepší přehled
+                currentNavDistance < 600 -> 17.5  // Přiblížení na přesné odbočení
+                else -> 16.0
+            }
+        } else 13.0
+
         val tBear = if (is3dModeExternal) FollowPuckViewportStateBearing.SyncWithLocationPuck else FollowPuckViewportStateBearing.Constant(0.0)
         val tPad = if (is3dModeExternal) EdgeInsets(800.0, 0.0, 0.0, 0.0) else EdgeInsets(0.0, 0.0, 0.0, 0.0)
 
         mapViewportState.transitionToFollowPuckState(
-            FollowPuckViewportStateOptions.Builder()
-                .pitch(tPitch)
-                .zoom(tZoom)
-                .bearing(tBear)
-                .padding(tPad)
-                .build()
+            FollowPuckViewportStateOptions.Builder().pitch(tPitch).zoom(tZoom).bearing(tBear).padding(tPad).build()
         )
     }
 
@@ -130,7 +159,7 @@ fun Viewport(
         val tPitch = if (is3dModeExternal) 60.0 else 0.0
         val tZoom = if (is3dModeExternal) 16.0 else 13.0
         val tBear = if (is3dModeExternal) FollowPuckViewportStateBearing.SyncWithLocationPuck else FollowPuckViewportStateBearing.Constant(0.0)
-        val tPad = if (is3dModeExternal) EdgeInsets(0.0, 0.0, 1000.0, 0.0) else EdgeInsets(0.0, 0.0, 0.0, 0.0)
+        val tPad = if (is3dModeExternal) EdgeInsets(800.0, 0.0, 0.0, 0.0) else EdgeInsets(0.0, 0.0, 0.0, 0.0)
 
         mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().bearing(tBear).pitch(tPitch).zoom(tZoom).padding(tPad).build())
 
@@ -148,7 +177,7 @@ fun Viewport(
     }
 
     Box(modifier = modifier.fillMaxWidth().background(Color.DarkGray)) {
-        TeslaMap(modifier = Modifier.fillMaxSize(), mapViewportState = mapViewportState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal)
+        TeslaMap(modifier = Modifier.fillMaxSize(), mapViewportState = mapViewportState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal, show3dBuildings = show3dBuildings)
         val uiAlpha by animateFloatAsState(targetValue = if (isNightPanel) 0f else 1f, label = "UI Fade")
 
         if (uiAlpha > 0f) {
@@ -191,7 +220,7 @@ fun Viewport(
                     val tPitch = if (is3dModeExternal) 60.0 else 0.0
                     val tZoom = if (is3dModeExternal) 16.0 else 13.0
                     val tBear = if (is3dModeExternal) FollowPuckViewportStateBearing.SyncWithLocationPuck else FollowPuckViewportStateBearing.Constant(0.0)
-                    val tPad = if (is3dModeExternal) EdgeInsets(0.0, 0.0, 1000.0, 0.0) else EdgeInsets(0.0, 0.0, 0.0, 0.0)
+                    val tPad = if (is3dModeExternal) EdgeInsets(800.0, 0.0, 0.0, 0.0) else EdgeInsets(0.0, 0.0, 0.0, 0.0)
                     mapViewportState.transitionToFollowPuckState(FollowPuckViewportStateOptions.Builder().bearing(tBear).pitch(tPitch).zoom(tZoom).padding(tPad).build())
                 }, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), containerColor = Color.Black, contentColor = Color.White) { Icon(Icons.Default.MyLocation, "Locate Me") }
             }
@@ -204,6 +233,7 @@ fun GoogleViewport(
     modifier: Modifier = Modifier,
     isNightPanel: Boolean = false,
     is3dModeExternal: Boolean = false,
+    currentNavDistance: Int? = null, // 🌟 Adaptivní Zoom
     searchEngine: String,
     currentLocation: Location?,
     routeGeoJson: String?,
@@ -222,14 +252,43 @@ fun GoogleViewport(
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
     val cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(LatLng(50.0755, 14.4378), 13f) }
 
-    LaunchedEffect(currentLocation, is3dModeExternal) {
-        if (is3dModeExternal && currentLocation != null) {
+    // Chytré centrování
+    LaunchedEffect(cameraPositionState.isMoving) {
+        if (!cameraPositionState.isMoving && cameraPositionState.cameraMoveStartedReason == CameraMoveStartedReason.GESTURE) {
+            val delayMillis = if (is3dModeExternal) 5000L else 20000L
+            delay(delayMillis)
+            if (currentLocation != null) {
+                val tTilt = if (is3dModeExternal) 60f else 0f
+                val tZoom = if (is3dModeExternal) 16f else 13f
+                val tBear = if (is3dModeExternal) currentLocation.bearing else 0f
+                val targetLatLng = LatLng(currentLocation.latitude, currentLocation.longitude)
+                cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(targetLatLng).zoom(tZoom).tilt(tTilt).bearing(tBear).build()), 1500)
+            }
+        }
+    }
+
+    // 🌟 ZMĚNA: Adaptivní zoom a náklon pro Google Mapy
+    LaunchedEffect(currentLocation, is3dModeExternal, currentNavDistance) {
+        if (is3dModeExternal && currentLocation != null && cameraPositionState.cameraMoveStartedReason != CameraMoveStartedReason.GESTURE) {
+            val tTilt = when {
+                currentNavDistance == null -> 60f
+                currentNavDistance > 2000 -> 40f
+                currentNavDistance < 600 -> 65f
+                else -> 55f
+            }
+            val tZoom = when {
+                currentNavDistance == null -> 16f
+                currentNavDistance > 2000 -> 14.5f
+                currentNavDistance < 600 -> 17.5f
+                else -> 16f
+            }
+
             cameraPositionState.animate(
                 CameraUpdateFactory.newCameraPosition(
                     CameraPosition.Builder()
                         .target(LatLng(currentLocation.latitude, currentLocation.longitude))
-                        .zoom(16f)
-                        .tilt(60f)
+                        .zoom(tZoom)
+                        .tilt(tTilt)
                         .bearing(currentLocation.bearing)
                         .build()
                 ), 1500
@@ -277,8 +336,8 @@ fun GoogleViewport(
     }
 
     Box(modifier = modifier.fillMaxWidth().background(Color.DarkGray)) {
-        val bottomPadding = if (is3dModeExternal) 250.dp else 0.dp
-        GoogleMapDisplay(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal, bottomPadding = bottomPadding)
+        val topPadding = if (is3dModeExternal) 300.dp else 0.dp
+        GoogleMapDisplay(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal, topPadding = topPadding)
 
         val uiAlpha by animateFloatAsState(targetValue = if (isNightPanel) 0f else 1f, label = "UI Fade")
 
@@ -333,38 +392,53 @@ fun GoogleViewport(
 }
 
 @Composable
-fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.extension.compose.animation.viewport.MapViewportState, routeGeoJson: String? = null, is3dMode: Boolean = false) {
+fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.extension.compose.animation.viewport.MapViewportState, routeGeoJson: String? = null, is3dMode: Boolean = false, show3dBuildings: Boolean = true) {
     val context = LocalContext.current
     var locationPermissionGranted by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) locationPermissionGranted = true }
 
     MapboxMap(modifier = Modifier.fillMaxSize(), mapViewportState = mapViewportState) {
-        MapEffect(locationPermissionGranted) { mapView ->
+        MapEffect(locationPermissionGranted, show3dBuildings) { mapView ->
             mapView.mapboxMap.loadStyleUri(Style.TRAFFIC_NIGHT) { style ->
                 val sourceId = "route-source"; val layerId = "route-layer"
                 if (!style.styleSourceExists(sourceId)) style.addSource(geoJsonSource(sourceId) { data("") })
                 if (!style.styleLayerExists(layerId)) {
                     style.addLayer(lineLayer(layerId, sourceId) {
-
-                        // 🌟 TADY JE TA MAGIE PRO BARVENÍ DLE DOPRAVY!
                         lineColor(
                             match(
                                 get("congestion"),
-                                literal("unknown"), literal("#00B0FF"), // Výchozí modrá
-                                literal("low"), literal("#00B0FF"),     // Nízký provoz = modrá
-                                literal("moderate"), literal("#FF9900"),// Střední provoz = oranžová
-                                literal("heavy"), literal("#FF0000"),   // Těžký provoz = červená
-                                literal("severe"), literal("#8B0000"),  // Zácpa = tmavě červená
-                                literal("#00B0FF")                      // Fallback
+                                literal("unknown"), literal("#00B0FF"),
+                                literal("low"), literal("#00B0FF"),
+                                literal("moderate"), literal("#FF9900"),
+                                literal("heavy"), literal("#FF0000"),
+                                literal("severe"), literal("#8B0000"),
+                                literal("#00B0FF")
                             )
                         )
                         lineWidth(8.0)
-                        lineOpacity(0.85) // Mírně vyšší neprůhlednost, ať barvy lépe vyniknou
+                        lineOpacity(0.85)
                         lineCap(LineCap.ROUND)
                         lineJoin(LineJoin.ROUND)
                     })
                 }
-                if (!style.styleLayerExists("3d-buildings")) { val bLayer = FillExtrusionLayer("3d-buildings", "composite"); bLayer.sourceLayer("building"); bLayer.filter(eq(get("extrude"), literal("true"))); bLayer.minZoom(15.0); bLayer.fillExtrusionColor(Color.DarkGray.toArgb()); bLayer.fillExtrusionOpacity(0.8); bLayer.fillExtrusionHeight(get("height")); bLayer.fillExtrusionBase(get("min_height")); style.addLayer(bLayer) }
+
+                if (show3dBuildings) {
+                    if (!style.styleLayerExists("3d-buildings")) {
+                        val bLayer = FillExtrusionLayer("3d-buildings", "composite");
+                        bLayer.sourceLayer("building");
+                        bLayer.filter(eq(get("extrude"), literal("true")));
+                        bLayer.minZoom(15.0);
+                        bLayer.fillExtrusionColor(Color.DarkGray.toArgb());
+                        bLayer.fillExtrusionOpacity(0.8);
+                        bLayer.fillExtrusionHeight(get("height"));
+                        bLayer.fillExtrusionBase(get("min_height"));
+                        style.addLayer(bLayer)
+                    }
+                } else {
+                    if (style.styleLayerExists("3d-buildings")) {
+                        style.removeStyleLayer("3d-buildings")
+                    }
+                }
             }
             if (locationPermissionGranted) {
                 mapView.location.updateSettings {
@@ -380,11 +454,10 @@ fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.ex
 }
 
 @Composable
-fun GoogleMapDisplay(modifier: Modifier = Modifier, cameraPositionState: com.google.maps.android.compose.CameraPositionState, routeGeoJson: String? = null, is3dMode: Boolean = false, bottomPadding: androidx.compose.ui.unit.Dp = 0.dp) {
+fun GoogleMapDisplay(modifier: Modifier = Modifier, cameraPositionState: com.google.maps.android.compose.CameraPositionState, routeGeoJson: String? = null, is3dMode: Boolean = false, topPadding: androidx.compose.ui.unit.Dp = 0.dp) {
     val uiSettings = remember { MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false, mapToolbarEnabled = false) }
     val mapProperties = remember(is3dMode) { MapProperties(isMyLocationEnabled = true, isTrafficEnabled = true, maxZoomPreference = 20f, minZoomPreference = 5f) }
 
-    // 🌟 ROBUSTNĚJŠÍ PARSER PRO GOOGLE (Protože Mapbox mu teď posílá rozsekanou trasu)
     val routePoints = remember(routeGeoJson) {
         val points = mutableListOf<LatLng>()
         if (routeGeoJson != null) {
@@ -401,7 +474,7 @@ fun GoogleMapDisplay(modifier: Modifier = Modifier, cameraPositionState: com.goo
         points
     }
 
-    GoogleMap(modifier = modifier, cameraPositionState = cameraPositionState, properties = mapProperties, uiSettings = uiSettings, contentPadding = PaddingValues(bottom = bottomPadding)) {
+    GoogleMap(modifier = modifier, cameraPositionState = cameraPositionState, properties = mapProperties, uiSettings = uiSettings, contentPadding = PaddingValues(top = topPadding)) {
         if (routePoints.isNotEmpty()) Polyline(points = routePoints, color = Color(0xAA00B0FF), width = 24f, geodesic = true)
     }
 }
