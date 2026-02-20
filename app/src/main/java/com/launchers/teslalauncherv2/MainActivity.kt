@@ -112,10 +112,7 @@ fun TeslaLayout() {
     var currentSpeedLimit by remember { mutableStateOf<Int?>(null) }
 
     var routeCoordinates by remember { mutableStateOf<List<Location>>(emptyList()) }
-
-    // 🌟 NOVÉ: Ukládáme si cíl trasy pro případné přepočítání
     var currentDestination by remember { mutableStateOf<Point?>(null) }
-    // Flag zabraňující spamu dotazů na API při přepočítávání
     var isRerouting by remember { mutableStateOf(false) }
 
     val currentInstruction = navInstructionsList.getOrNull(currentInstructionIndex)
@@ -146,9 +143,44 @@ fun TeslaLayout() {
 
     val effectiveSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
 
-    LaunchedEffect(isSettingsOpen) {
-        showSpeedLimitSetting = sharedPrefs.getBoolean("show_speed_limit", true)
+    // 🌟 PŘESUNUTO SEM NAHORU: Aby to LocationListener mohl používat pro Rerouting
+    val handleGeoJsonUpdate: (String?) -> Unit = { geo ->
+        routeGeoJson = geo
+        if (geo != null) {
+            try {
+                val coords = mutableListOf<Location>()
+                val featureCollection = com.mapbox.geojson.FeatureCollection.fromJson(geo)
+                featureCollection.features()?.forEach { feature ->
+                    val lineString = feature.geometry() as? com.mapbox.geojson.LineString
+                    lineString?.coordinates()?.forEach { pt ->
+                        if (coords.isEmpty() || coords.last().latitude != pt.latitude() || coords.last().longitude != pt.longitude()) {
+                            coords.add(Location("").apply {
+                                latitude = pt.latitude()
+                                longitude = pt.longitude()
+                            })
+                        }
+                    }
+                }
+                routeCoordinates = coords
+            } catch (e: Exception) {
+                routeCoordinates = emptyList()
+            }
+        } else {
+            routeCoordinates = emptyList()
+        }
     }
+
+    val cancelRouteAction = {
+        navInstructionsList = emptyList()
+        currentRouteDuration = null
+        routeGeoJson = null
+        routeCoordinates = emptyList()
+        speedLimitsList = emptyList()
+        currentSpeedLimit = null
+        currentDestination = null
+    }
+
+    LaunchedEffect(isSettingsOpen) { showSpeedLimitSetting = sharedPrefs.getBoolean("show_speed_limit", true) }
 
     LaunchedEffect(lastManualShiftTime) {
         if (lastManualShiftTime > 0) {
@@ -258,26 +290,20 @@ fun TeslaLayout() {
                     var minDistance = Float.MAX_VALUE
                     var closestSegmentIndex = 0
 
-                    // 1. Hledáme nejbližší ÚSEK (čáru mezi dvěma body), ne jen bod!
                     for (i in 0 until routeCoordinates.size - 1) {
                         val a = routeCoordinates[i]
                         val b = routeCoordinates[i + 1]
-
                         val dist = pointToLineDistance(location, a, b)
-
                         if (dist < minDistance) {
                             minDistance = dist
                             closestSegmentIndex = i
                         }
                     }
 
-                    // 2. Napárujeme ho na rychlostní limity (které vrací API po úsecích)
                     val limitIndex = closestSegmentIndex.coerceAtMost(speedLimitsList.size - 1)
                     currentSpeedLimit = speedLimitsList.getOrNull(limitIndex)
 
                     // 3. Detekce sjetí z trasy (Off-route Rerouting)
-                    // Musíme být víc jak 50m od čáry a zároveň mít kvalitní GPS signál (accuracy < 30m),
-                    // aby to nepřepočítávalo při vjezdu do tunelu.
                     if (minDistance > 50f && location.accuracy < 30f && currentDestination != null && !isRerouting) {
                         isRerouting = true
                         Toast.makeText(context, "Rerouting...", Toast.LENGTH_SHORT).show()
@@ -288,7 +314,7 @@ fun TeslaLayout() {
                             NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
                                 scope.launch(Dispatchers.Main) {
                                     if (geo != null) {
-                                        routeGeoJson = geo
+                                        handleGeoJsonUpdate(geo) // 🌟 OPRAVA: Místo "routeGeoJson = geo" nyní parsujeme i souřadnice!
                                         navInstructionsList = instr
                                         currentRouteDuration = dur
                                         speedLimitsList = limits
@@ -302,7 +328,7 @@ fun TeslaLayout() {
                             NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
                                 scope.launch(Dispatchers.Main) {
                                     if (geo != null) {
-                                        routeGeoJson = geo
+                                        handleGeoJsonUpdate(geo) // 🌟 OPRAVA: Zde se konečně aktualizují matematické body trasy!
                                         navInstructionsList = instr
                                         currentRouteDuration = dur
                                         speedLimitsList = limits
@@ -336,7 +362,7 @@ fun TeslaLayout() {
                             currentRouteDuration = null
                             speedLimitsList = emptyList()
                             currentSpeedLimit = null
-                            currentDestination = null // Reset cíle po dojetí
+                            currentDestination = null
                             lastMinDistance = Double.MAX_VALUE
                             Toast.makeText(context, "You have arrived!", Toast.LENGTH_LONG).show()
                         }
@@ -364,35 +390,6 @@ fun TeslaLayout() {
 
         onDispose {
             locationManager.removeUpdates(listener)
-        }
-    }
-
-    val cancelRouteAction = {
-        navInstructionsList = emptyList()
-        currentRouteDuration = null
-        routeGeoJson = null
-        routeCoordinates = emptyList()
-        speedLimitsList = emptyList()
-        currentSpeedLimit = null
-        currentDestination = null // 🌟 Smazání cíle při stornu
-    }
-
-    val handleGeoJsonUpdate: (String?) -> Unit = { geo ->
-        routeGeoJson = geo
-        if (geo != null) {
-            try {
-                val coords = mutableListOf<Location>()
-                val featureCollection = com.mapbox.geojson.FeatureCollection.fromJson(geo)
-                val lineString = featureCollection.features()?.firstOrNull()?.geometry() as? com.mapbox.geojson.LineString
-                lineString?.coordinates()?.forEach { pt ->
-                    coords.add(Location("").apply { latitude = pt.latitude(); longitude = pt.longitude() })
-                }
-                routeCoordinates = coords
-            } catch (e: Exception) {
-                routeCoordinates = emptyList()
-            }
-        } else {
-            routeCoordinates = emptyList()
         }
     }
 
@@ -432,7 +429,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
+                                onDestinationSet = { dest -> currentDestination = dest },
                                 onCancelRoute = cancelRouteAction
                             )
                             "GOOGLE" -> GoogleViewport(
@@ -442,7 +439,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
+                                onDestinationSet = { dest -> currentDestination = dest },
                                 onCancelRoute = cancelRouteAction
                             )
                         }
@@ -475,7 +472,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
+                                onDestinationSet = { dest -> currentDestination = dest },
                                 onCancelRoute = cancelRouteAction
                             )
                             "GOOGLE" -> GoogleViewport(
@@ -485,7 +482,7 @@ fun TeslaLayout() {
                                 onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
                                 onRouteDurationUpdated = { currentRouteDuration = it },
                                 onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest }, // 🌟 Uložení cíle z Viewportu
+                                onDestinationSet = { dest -> currentDestination = dest },
                                 onCancelRoute = cancelRouteAction
                             )
                         }
@@ -526,7 +523,7 @@ fun TeslaLayout() {
                 currentMapEngine = currentMapEngine, onMapEngineChange = { newEngine ->
                     currentMapEngine = newEngine;
                     sharedPrefs.edit().putString("map_engine", newEngine).apply();
-                    cancelRouteAction() // 🌟 OPRAVA PÁDU: Smažeme trasu při přepnutí
+                    cancelRouteAction()
                 },
                 currentSearchEngine = currentSearchEngine, onSearchEngineChange = { newEngine -> currentSearchEngine = newEngine; sharedPrefs.edit().putString("search_engine", newEngine).apply() },
                 currentLocation = currentGpsLocation,
@@ -600,19 +597,15 @@ private fun pointToLineDistance(p: Location, a: Location, b: Location): Float {
     val dx = xB - xA
     val dy = yB - yA
 
-    // Pokud jsou body A a B na stejném místě
     if (dx == 0.0 && dy == 0.0) {
         return p.distanceTo(a)
     }
 
-    // Výpočet průmětu bodu P na přímku AB
     val t = ((xP - xA) * dx + (yP - yA) * dy) / (dx * dx + dy * dy)
 
-    // Omezení úsečkou (bod je mimo úsek = měříme k začátku nebo konci)
     if (t <= 0.0) return p.distanceTo(a)
     if (t >= 1.0) return p.distanceTo(b)
 
-    // Nalezení přesného nejbližšího bodu na čáře
     val closestLat = yA + t * dy
     val closestLon = xA + t * dx
 
@@ -621,6 +614,5 @@ private fun pointToLineDistance(p: Location, a: Location, b: Location): Float {
         longitude = closestLon
     }
 
-    // Android Location nám pak vrátí naprosto přesnou vzdálenost v metrech
     return p.distanceTo(closestPoint)
 }
