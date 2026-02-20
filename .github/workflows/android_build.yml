@@ -52,6 +52,7 @@ jobs:
           artifacts: "TeslaLauncher-Nightly-*.apk"
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: "nightly"                 # Persistent tag
+          commit: ${{ github.sha }}      # 🌟 OPRAVA: Donutí GitHub posunout tag na aktuální zdrojový kód!
           name: "Nightly Build 🌙"       # Release title
           body: "Automatic nightly build. Contains the latest changes from the main branch."
           prerelease: true               # Mark as Pre-release (orange badge)
