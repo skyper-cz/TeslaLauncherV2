@@ -1,7 +1,7 @@
 # 🚗 TeslaLauncher V2
 
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android)](#)
-[![Version](https://img.shields.io/badge/Version-1.2.0-blue)](#)
+[![Version](https://img.shields.io/badge/Version-1.3.4-blue)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A modern, clean, and blazing-fast Car Launcher for Android head units and tablets. Inspired by the minimalist and intuitive design of Tesla infotainment systems. This project seamlessly integrates navigation, live OBD2 telemetry, and media controls into a single, distraction-free interface.
