@@ -460,6 +460,7 @@ fun SettingsScreen(
                 // 🌟 4. EXPERIMENTAL FEATURES (S MASTER VYPÍNAČEM)
                 var isExperimentalMasterEnabled by remember { mutableStateOf(context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).getBoolean("master_experimental", false)) }
                 var isDashcamEnabled by remember { mutableStateOf(context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).getBoolean("enable_dashcam", false)) }
+                var isAiEnabled by remember { mutableStateOf(context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).getBoolean("enable_ai", false)) }
 
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -527,7 +528,49 @@ fun SettingsScreen(
                     )
                 }
 
-                // 🌟 TLAČÍTKO PRO RESET KAMER PŘIDÁNO ZDE
+                // PŘIDÁNO: AI Toggle (Aktivní pouze pokud je zapnutý Master switch)
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (isExperimentalMasterEnabled) Color(0xFF3A0000) else Color(0xFF1A1A1A), RoundedCornerShape(12.dp))
+                        .padding(16.dp)
+                        .clickable(enabled = isExperimentalMasterEnabled) {
+                            isAiEnabled = !isAiEnabled
+                            context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("enable_ai", isAiEnabled).apply()
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // Použijeme ikonku blesku nebo mozku (Zde AutoAwesome jako symbol AI)
+                        Icon(Icons.Default.AutoAwesome, null, tint = if (isExperimentalMasterEnabled) Color.White else Color.DarkGray)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text("AI Co-Pilot (Background)", color = if (isExperimentalMasterEnabled) Color.White else Color.DarkGray, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Smart analysis of driving data", color = if (isExperimentalMasterEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
+                        }
+                    }
+                    Switch(
+                        checked = isAiEnabled,
+                        onCheckedChange = {
+                            if (isExperimentalMasterEnabled) {
+                                isAiEnabled = it
+                                context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("enable_ai", it).apply()
+                            }
+                        },
+                        enabled = isExperimentalMasterEnabled,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Red,
+                            checkedTrackColor = Color(0xFF550000),
+                            disabledCheckedThumbColor = Color.DarkGray,
+                            disabledUncheckedThumbColor = Color.DarkGray,
+                            disabledUncheckedTrackColor = Color(0xFF222222)
+                        )
+                    )
+                }
+
+                // TLAČÍTKO PRO RESET KAMER PŘIDÁNO ZDE
                 Button(
                     onClick = {
                         val editor = context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit()

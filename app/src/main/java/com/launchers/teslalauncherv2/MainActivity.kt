@@ -55,6 +55,9 @@ import com.launchers.teslalauncherv2.obd.ObdDataManager
 import com.launchers.teslalauncherv2.hardware.ReverseCameraScreen
 import com.mapbox.geojson.Point
 
+// --- PŘIDANÝ IMPORT PRO AiManager ---
+import com.launchers.teslalauncherv2.ai.AiManager
+
 class MainActivity : ComponentActivity() {
 
     // Variable holding a potential destination obtained from an external link (e.g., Google Maps sharing)
@@ -146,6 +149,10 @@ fun TeslaLayout(activity: MainActivity? = null) {
     // 1. STATE VARIABLES AND SETTINGS
     // =========================================================================
 
+    // --- INSTANCE AiManageru ---
+    // (Pokud tvůj konstruktor vyžaduje context, změň to na AiManager(context))
+    val aiManager = remember { AiManager() }
+
     // OBD data (Speed, RPM, Engine faults)
     val carStateFlow = ObdDataManager.carState
     val carStateSnapshot by carStateFlow.collectAsState()
@@ -187,6 +194,7 @@ fun TeslaLayout(activity: MainActivity? = null) {
     var showSpeedLimitSetting by remember { mutableStateOf(sharedPrefs.getBoolean("show_speed_limit", true)) }
     var show3dBuildings by remember { mutableStateOf(sharedPrefs.getBoolean("show_3d_buildings", true)) }
     var autoShiftGear by remember { mutableStateOf(sharedPrefs.getBoolean("auto_shift_gear", true)) }
+    var enableAiFeatures by remember { mutableStateOf(sharedPrefs.getBoolean("enable_ai", false)) }
 
     // UI overlays control
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
@@ -252,6 +260,7 @@ fun TeslaLayout(activity: MainActivity? = null) {
         showSpeedLimitSetting = sharedPrefs.getBoolean("show_speed_limit", true)
         show3dBuildings = sharedPrefs.getBoolean("show_3d_buildings", true)
         autoShiftGear = sharedPrefs.getBoolean("auto_shift_gear", true)
+        enableAiFeatures = sharedPrefs.getBoolean("enable_ai", false)
     }
 
     // Blocks auto-shifting between P/D for 8 seconds if the user shifts manually
@@ -296,6 +305,20 @@ fun TeslaLayout(activity: MainActivity? = null) {
                 toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 400)
                 toneGen.release()
             } catch (e: Exception) { e.printStackTrace() }
+        }
+    }
+
+    LaunchedEffect(enableAiFeatures) {
+        if (enableAiFeatures) {
+            // Zde zavoláš metodu tvého AiManageru, která odstartuje jeho práci na pozadí
+            // Například:
+            // aiManager.startBackgroundAnalysis()
+
+            // Poznámka: Můžeš mu sem předávat třeba aktuální 'effectiveSpeed'
+            // nebo 'carStateSnapshot', pokud AI analyzuje jízdu.
+        } else {
+            // Zde by měla být metoda pro zastavení AI, pokud to uživatel v nastavení vypne
+            // aiManager.stop()
         }
     }
 
