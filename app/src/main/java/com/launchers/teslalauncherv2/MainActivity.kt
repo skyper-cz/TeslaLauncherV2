@@ -20,6 +20,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -32,6 +33,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -55,15 +57,15 @@ import com.mapbox.geojson.Point
 
 class MainActivity : ComponentActivity() {
 
-    // Proměnná držící případný cíl získaný z externího linku
+    // Variable holding a potential destination obtained from an external link (e.g., Google Maps sharing)
     var externalDestinationPoint: Point? by mutableStateOf(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        hideSystemUI()
+        hideSystemUI() // Hides the system top and bottom bars for full-screen mode
 
-        // Zkontrolujeme, jestli apka nevznikla kliknutím na odkaz
+        // Check if the app was launched by clicking an external link
         checkIntentForExternalLocation(intent)
 
         setContent {
@@ -75,14 +77,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Při probuzení apky ze spánku
+    // Called when the app wakes up from sleep (e.g., clicking a link while it was running in the background)
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         checkIntentForExternalLocation(intent)
     }
 
-    // Zpracování Intentu a vytažení GPS souřadnic
+    // Processing the Intent and extracting GPS coordinates from a shared link
     private fun checkIntentForExternalLocation(intent: Intent?) {
         if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
             val coroutineScope = kotlinx.coroutines.CoroutineScope(Dispatchers.Main)
@@ -90,9 +92,9 @@ class MainActivity : ComponentActivity() {
                 val parsedPoint = MapLinkParser.parseIntentForDestination(intent.data)
                 if (parsedPoint != null) {
                     externalDestinationPoint = parsedPoint
-                    Toast.makeText(this@MainActivity, "Načítám cíl ze sdíleného odkazu...", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Loading destination from shared link...", Toast.LENGTH_SHORT).show()
                 } else {
-                    Toast.makeText(this@MainActivity, "Nepodařilo se přečíst sdílenou adresu", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Failed to read shared address", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -100,7 +102,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        hideSystemUI()
+        hideSystemUI() // Failsafe to ensure system bars don't reappear after returning to the app
     }
 
     private fun hideSystemUI() {
@@ -132,22 +134,34 @@ fun TeslaLayout(activity: MainActivity? = null) {
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val scope = rememberCoroutineScope()
 
+    // Load Google Maps API key from the manifest
+    val googleApiKey = remember {
+        try {
+            val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA)
+            ai.metaData.getString("com.google.android.geo.API_KEY") ?: ""
+        } catch (e: Exception) { "" }
+    }
+
+    // =========================================================================
+    // 1. STATE VARIABLES AND SETTINGS
+    // =========================================================================
+
+    // OBD data (Speed, RPM, Engine faults)
     val carStateFlow = ObdDataManager.carState
     val carStateSnapshot by carStateFlow.collectAsState()
 
+    // Navigation data (Instructions, speed limits, map routes)
     var navInstructionsList by remember { mutableStateOf<List<NavInstruction>>(emptyList()) }
     var currentInstructionIndex by remember { mutableIntStateOf(0) }
     var currentManeuverDistance by remember { mutableStateOf<Int?>(null) }
     var lastMinDistance by remember { mutableStateOf(Double.MAX_VALUE) }
-
     var speedLimitsList by remember { mutableStateOf<List<Int?>>(emptyList()) }
     var currentSpeedLimit by remember { mutableStateOf<Int?>(null) }
-
     var routeCoordinates by remember { mutableStateOf<List<Location>>(emptyList()) }
     var currentDestination by remember { mutableStateOf<Point?>(null) }
     var isRerouting by remember { mutableStateOf(false) }
 
-    // ZACHYTÁVÁNÍ EXTERNÍ LOKACE Z INTENTU
+    // Intercepting external location from intent
     LaunchedEffect(activity?.externalDestinationPoint) {
         val extPoint = activity?.externalDestinationPoint
         if (extPoint != null) {
@@ -165,21 +179,24 @@ fun TeslaLayout(activity: MainActivity? = null) {
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var currentGpsLocation by remember { mutableStateOf<Location?>(null) }
 
+    // User settings from SharedPreferences
     val sharedPrefs = remember { context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE) }
     var savedObdMacAddress by remember { mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "") }
     var currentMapEngine by remember { mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX") }
     var currentSearchEngine by remember { mutableStateOf(sharedPrefs.getString("search_engine", "MAPBOX") ?: "MAPBOX") }
-
     var showSpeedLimitSetting by remember { mutableStateOf(sharedPrefs.getBoolean("show_speed_limit", true)) }
     var show3dBuildings by remember { mutableStateOf(sharedPrefs.getBoolean("show_3d_buildings", true)) }
     var autoShiftGear by remember { mutableStateOf(sharedPrefs.getBoolean("auto_shift_gear", true)) }
 
-    val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
-
+    // UI overlays control
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
     var isSettingsOpen by rememberSaveable { mutableStateOf(false) }
     var isAppDrawerOpen by rememberSaveable { mutableStateOf(false) }
+    var isErrorDrawerOpen by remember { mutableStateOf(false) } // Opens the top drawer with errors
+    val activeErrors = remember { mutableStateListOf<String>() } // List of active OBD errors
+    var lastErrorTriggered by remember { mutableStateOf<String?>(null) }
 
+    // Gear shift logic (P/R/N/D)
     var currentGear by rememberSaveable { mutableStateOf("P") }
     var lastManualShiftTime by remember { mutableLongStateOf(0L) }
     var is3dMapMode by remember { mutableStateOf(false) }
@@ -187,10 +204,14 @@ fun TeslaLayout(activity: MainActivity? = null) {
     var isLocationPermissionGranted by remember { mutableStateOf(false) }
     var isManualOverrideActive by remember { mutableStateOf(false) }
 
-    var lastErrorTriggered by remember { mutableStateOf<String?>(null) }
-
+    // Final speed (If OBD is connected, take from car. Otherwise, fallback to GPS)
     val effectiveSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
 
+    // =========================================================================
+    // 2. FUNCTIONS AND EFFECTS (BACKGROUND LOGIC)
+    // =========================================================================
+
+    // Decode navigation route (GeoJSON) into actual coordinates for GPS comparison
     val handleGeoJsonUpdate: (String?) -> Unit = { geo ->
         routeGeoJson = geo
         if (geo != null) {
@@ -233,6 +254,7 @@ fun TeslaLayout(activity: MainActivity? = null) {
         autoShiftGear = sharedPrefs.getBoolean("auto_shift_gear", true)
     }
 
+    // Blocks auto-shifting between P/D for 8 seconds if the user shifts manually
     LaunchedEffect(lastManualShiftTime) {
         if (lastManualShiftTime > 0) {
             isManualOverrideActive = true
@@ -250,6 +272,7 @@ fun TeslaLayout(activity: MainActivity? = null) {
         }
     }
 
+    // Auto-shifting: Above 5 km/h shift to 'D', below 4 km/h shift to 'P' (If not disabled by user)
     LaunchedEffect(effectiveSpeed, currentGear, isManualOverrideActive, autoShiftGear) {
         if (currentGear == "D") is3dMapMode = true else if (currentGear == "P") is3dMapMode = false
 
@@ -261,9 +284,13 @@ fun TeslaLayout(activity: MainActivity? = null) {
         }
     }
 
+    // Listen for OBD errors. If a new error arrives, beep and add it to the ErrorDrawer.
     LaunchedEffect(carStateSnapshot.error) {
         if (!carStateSnapshot.error.isNullOrEmpty() && carStateSnapshot.error != lastErrorTriggered) {
             lastErrorTriggered = carStateSnapshot.error
+            if (!activeErrors.contains(carStateSnapshot.error)) {
+                activeErrors.add(carStateSnapshot.error!!)
+            }
             try {
                 val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100)
                 toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 400)
@@ -281,6 +308,10 @@ fun TeslaLayout(activity: MainActivity? = null) {
         } else currentGear = gear
     }
 
+    // =========================================================================
+    // 3. GPS LOOP AND LOCATION TRACKING (Runs as long as the app is open)
+    // =========================================================================
+
     val locationPermissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions(), onResult = { permissions ->
         val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
         if (granted) { isLocationPermissionGranted = true; gpsStatus = "READY" } else { gpsStatus = "NO PERM" }
@@ -290,53 +321,14 @@ fun TeslaLayout(activity: MainActivity? = null) {
         if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
     })
 
-    LaunchedEffect(savedObdMacAddress) {
-        if (savedObdMacAddress.isNotBlank()) {
-            val hasPerm = if (Build.VERSION.SDK_INT >= 31) ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED else true
-            if (hasPerm) {
-                ObdDataManager.stop()
-                delay(500)
-                ObdDataManager.connect(context, savedObdMacAddress)
-            }
-        }
-    }
-
     LaunchedEffect(Unit) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) isLocationPermissionGranted = true
         else locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
 
-        if (Build.VERSION.SDK_INT >= 31) {
-            bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
-        } else {
-            if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
-        }
+        if (Build.VERSION.SDK_INT >= 31) bluetoothPermissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT))
+        else if (savedObdMacAddress.isNotBlank()) ObdDataManager.connect(context, savedObdMacAddress)
 
         launch(Dispatchers.IO) { AppManager.prefetchApps(context) }
-
-        launch(Dispatchers.IO) {
-            val prefs = context.getSharedPreferences("offline_maps_status", Context.MODE_PRIVATE)
-            val routes = prefs.getStringSet("saved_routes", mutableSetOf()) ?: mutableSetOf()
-            val validRoutes = mutableSetOf<String>()
-            var changed = false
-            val thirtyDaysInMillis = 30L * 24 * 60 * 60 * 1000
-            val now = System.currentTimeMillis()
-
-            for (routeData in routes) {
-                val parts = routeData.split("|")
-                if (parts.size >= 2) {
-                    val id = parts[0]
-                    val timestamp = parts[1].toLongOrNull() ?: 0L
-                    if (now - timestamp > thirtyDaysInMillis) {
-                        try { OfflineMapManager.deleteRegion(id) } catch (e: Exception) { }
-                        changed = true
-                    } else {
-                        validRoutes.add(routeData)
-                    }
-                }
-            }
-            if (changed) { prefs.edit().putStringSet("saved_routes", validRoutes).apply() }
-        }
-
         while (true) { batteryLevel = getBatteryLevel(context); delay(60000) }
     }
 
@@ -348,6 +340,7 @@ fun TeslaLayout(activity: MainActivity? = null) {
                 currentGpsLocation = location
                 if (location.hasSpeed()) currentSpeedGps = (location.speed * 3.6f).toInt()
 
+                // Handle route deviation and recalculation (Rerouting)
                 if (routeCoordinates.isNotEmpty() && speedLimitsList.isNotEmpty()) {
                     var minDistance = Float.MAX_VALUE
                     var closestSegmentIndex = 0
@@ -356,10 +349,7 @@ fun TeslaLayout(activity: MainActivity? = null) {
                         val a = routeCoordinates[i]
                         val b = routeCoordinates[i + 1]
                         val dist = pointToLineDistance(location, a, b)
-                        if (dist < minDistance) {
-                            minDistance = dist
-                            closestSegmentIndex = i
-                        }
+                        if (dist < minDistance) { minDistance = dist; closestSegmentIndex = i }
                     }
 
                     val limitIndex = closestSegmentIndex.coerceAtMost(speedLimitsList.size - 1)
@@ -368,76 +358,27 @@ fun TeslaLayout(activity: MainActivity? = null) {
                     if (minDistance > 50f && location.accuracy < 30f && currentDestination != null && !isRerouting) {
                         isRerouting = true
                         Toast.makeText(context, "Rerouting...", Toast.LENGTH_SHORT).show()
-
                         val currentPoint = Point.fromLngLat(location.longitude, location.latitude)
 
                         if (currentMapEngine == "GOOGLE") {
                             NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
                                 scope.launch(Dispatchers.Main) {
-                                    if (geo != null) {
-                                        handleGeoJsonUpdate(geo)
-                                        navInstructionsList = instr
-                                        currentRouteDuration = dur
-                                        speedLimitsList = limits
-                                        currentInstructionIndex = 0
-                                        lastMinDistance = Double.MAX_VALUE
-                                    }
+                                    if (geo != null) { handleGeoJsonUpdate(geo); navInstructionsList = instr; currentRouteDuration = dur; speedLimitsList = limits; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }
                                     isRerouting = false
                                 }
                             }
                         } else {
                             NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
                                 scope.launch(Dispatchers.Main) {
-                                    if (geo != null) {
-                                        handleGeoJsonUpdate(geo)
-                                        navInstructionsList = instr
-                                        currentRouteDuration = dur
-                                        speedLimitsList = limits
-                                        currentInstructionIndex = 0
-                                        lastMinDistance = Double.MAX_VALUE
-                                    }
+                                    if (geo != null) { handleGeoJsonUpdate(geo); navInstructionsList = instr; currentRouteDuration = dur; speedLimitsList = limits; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }
                                     isRerouting = false
                                 }
                             }
                         }
                     }
-                } else if (routeCoordinates.isEmpty() && currentDestination != null && !isRerouting) {
-                    isRerouting = true
-                    Toast.makeText(context, "Plánuji trasu...", Toast.LENGTH_SHORT).show()
-
-                    val currentPoint = Point.fromLngLat(location.longitude, location.latitude)
-
-                    if (currentMapEngine == "GOOGLE") {
-                        NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
-                            scope.launch(Dispatchers.Main) {
-                                if (geo != null) {
-                                    handleGeoJsonUpdate(geo)
-                                    navInstructionsList = instr
-                                    currentRouteDuration = dur
-                                    speedLimitsList = limits
-                                    currentInstructionIndex = 0
-                                    lastMinDistance = Double.MAX_VALUE
-                                }
-                                isRerouting = false
-                            }
-                        }
-                    } else {
-                        NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
-                            scope.launch(Dispatchers.Main) {
-                                if (geo != null) {
-                                    handleGeoJsonUpdate(geo)
-                                    navInstructionsList = instr
-                                    currentRouteDuration = dur
-                                    speedLimitsList = limits
-                                    currentInstructionIndex = 0
-                                    lastMinDistance = Double.MAX_VALUE
-                                }
-                                isRerouting = false
-                            }
-                        }
-                    }
                 }
 
+                // Check off completed navigation instructions (turns)
                 val instruction = currentInstruction
                 if (instruction?.maneuverPoint != null && !isRerouting) {
                     val target = Location("T").apply {
@@ -455,9 +396,7 @@ fun TeslaLayout(activity: MainActivity? = null) {
                             Toast.makeText(context, "You have arrived!", Toast.LENGTH_LONG).show()
                         }
                     } else {
-                        if (dist < lastMinDistance) {
-                            lastMinDistance = dist.toDouble()
-                        }
+                        if (dist < lastMinDistance) lastMinDistance = dist.toDouble()
                         currentManeuverDistance = dist
                     }
                 }
@@ -471,28 +410,42 @@ fun TeslaLayout(activity: MainActivity? = null) {
             try {
                 gpsStatus = "SEARCHING..."
                 locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 1f, listener)
-            } catch (e: Exception) {
-                gpsStatus = "ERR GPS"
-            }
+            } catch (e: Exception) { gpsStatus = "ERR GPS" }
         }
-
-        onDispose {
-            locationManager.removeUpdates(listener)
-        }
+        onDispose { locationManager.removeUpdates(listener) }
     }
 
+
+    // =========================================================================
+    // 4. MAIN UI RENDERING (Z-INDEX MAGIC)
+    // =========================================================================
+
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+
+        // --- LANDSCAPE MODE ---
         if (isLandscape) {
             Row(modifier = Modifier.fillMaxSize()) {
+
+                // Left panel (Gauges and bottom menu)
                 Column(modifier = Modifier.fillMaxWidth(0.32f).fillMaxHeight()) {
-                    InstrumentClusterWrapper(
-                        modifier = Modifier.weight(0.60f),
-                        isLandscape = isLandscape,
-                        carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
-                        instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
-                        gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
-                        speedLimit = currentSpeedLimit, showSpeedLimit = showSpeedLimitSetting
-                    )
+
+                    // Box for gauges and top error drawer
+                    Box(modifier = Modifier.weight(0.60f).fillMaxWidth()) {
+                        InstrumentClusterWrapper(
+                            modifier = Modifier.fillMaxSize().clickable { isErrorDrawerOpen = !isErrorDrawerOpen },
+                            isLandscape = isLandscape,
+                            carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
+                            instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
+                            gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
+                            speedLimit = currentSpeedLimit, showSpeedLimit = showSpeedLimitSetting
+                        )
+                        SmartErrorDrawer(
+                            errors = activeErrors, isOpen = isErrorDrawerOpen,
+                            onClose = { isErrorDrawerOpen = false },
+                            onDismissError = { activeErrors.remove(it) }
+                        )
+                    }
+
                     HorizontalDivider(color = Color.DarkGray, thickness = 1.dp)
                     Dock(
                         modifier = Modifier.weight(0.40f),
@@ -501,96 +454,111 @@ fun TeslaLayout(activity: MainActivity? = null) {
                     )
                 }
 
+                // Middle column: Gear selector
                 GearSelector(
                     currentGear = currentGear,
                     onGearSelected = { gear -> manualShiftTo(gear) },
                     modifier = Modifier.width(60.dp).fillMaxHeight()
                 )
 
+                // Right panel: Map and camera layering
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    // MAPA BĚŽÍ VŽDY V POZADÍ
-                    when (currentMapEngine) {
-                        "MAPBOX" -> Viewport(
-                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                            currentNavDistance = currentManeuverDistance,
-                            show3dBuildings = show3dBuildings,
-                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                            onRouteDurationUpdated = { currentRouteDuration = it },
-                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                            onDestinationSet = { dest -> currentDestination = dest },
-                            onCancelRoute = cancelRouteAction
-                        )
-                        "GOOGLE" -> GoogleViewport(
-                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                            currentNavDistance = currentManeuverDistance,
-                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                            onRouteDurationUpdated = { currentRouteDuration = it },
-                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                            onDestinationSet = { dest -> currentDestination = dest },
-                            onCancelRoute = cancelRouteAction
-                        )
+
+                    // 🌟 LAYER 1: CAMERA (Z-index 0 or 20)
+                    // If 'D' (or anything other than 'R') is engaged, z-index is 0.
+                    // The camera runs COMPLETELY AT THE BOTTOM under the map (invisible, but can record Dashcam to a file).
+                    // If 'R' is engaged, z-index changes to 20 and the camera moves above the map, overlapping it.
+                    Box(modifier = Modifier.fillMaxSize().zIndex(if (currentGear == "R") 20f else 0f)) {
+                        ReverseCameraScreen(isReverseGear = currentGear == "R")
+
+                        if (currentGear == "R") {
+                            Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
+                        }
                     }
 
-                    // KAMERA PŘEKRÝVÁ MAPU PŘI ZPÁTEČCE
-                    if (currentGear == "R") {
-                        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                            ReverseCameraScreen()
-                            Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
+                    // 🌟 LAYER 2: MAP (Z-index 10)
+                    // The map sits in the middle. It's always above the invisible Dashcam, but yields to the Reverse camera.
+                    Box(modifier = Modifier.fillMaxSize().zIndex(10f)) {
+                        when (currentMapEngine) {
+                            "MAPBOX" -> Viewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, show3dBuildings = show3dBuildings,
+                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it }, onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, onCancelRoute = cancelRouteAction
+                            )
+                            "GOOGLE" -> GoogleViewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it }, onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, onCancelRoute = cancelRouteAction
+                            )
                         }
                     }
                 }
             }
-        } else {
+        }
+        // --- PORTRAIT MODE ---
+        else {
             Column(modifier = Modifier.fillMaxSize()) {
-                InstrumentClusterWrapper(
-                    modifier = Modifier.wrapContentHeight().fillMaxWidth(),
-                    isLandscape = isLandscape,
-                    carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
-                    instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
-                    gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
-                    speedLimit = currentSpeedLimit, showSpeedLimit = showSpeedLimitSetting
-                )
 
+                // Top gauges with error drawer
+                Box(modifier = Modifier.wrapContentHeight().fillMaxWidth()) {
+                    InstrumentClusterWrapper(
+                        modifier = Modifier.fillMaxWidth().clickable { isErrorDrawerOpen = !isErrorDrawerOpen },
+                        isLandscape = isLandscape,
+                        carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
+                        instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
+                        gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
+                        speedLimit = currentSpeedLimit, showSpeedLimit = showSpeedLimitSetting
+                    )
+                    SmartErrorDrawer(
+                        errors = activeErrors, isOpen = isErrorDrawerOpen,
+                        onClose = { isErrorDrawerOpen = false },
+                        onDismissError = { activeErrors.remove(it) }
+                    )
+                }
+
+                // Middle section (Layering map, camera, and gear selector)
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    // MAPA BĚŽÍ VŽDY V POZADÍ
-                    when (currentMapEngine) {
-                        "MAPBOX" -> Viewport(
-                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                            currentNavDistance = currentManeuverDistance,
-                            show3dBuildings = show3dBuildings,
-                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                            onRouteDurationUpdated = { currentRouteDuration = it },
-                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                            onDestinationSet = { dest -> currentDestination = dest },
-                            onCancelRoute = cancelRouteAction
-                        )
-                        "GOOGLE" -> GoogleViewport(
-                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                            currentNavDistance = currentManeuverDistance,
-                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                            onRouteDurationUpdated = { currentRouteDuration = it },
-                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                            onDestinationSet = { dest -> currentDestination = dest },
-                            onCancelRoute = cancelRouteAction
-                        )
-                    }
 
-                    // KAMERA PŘEKRÝVÁ MAPU PŘI ZPÁTEČCE
-                    if (currentGear == "R") {
-                        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-                            ReverseCameraScreen()
+                    // 🌟 LAYER 1: CAMERA (In the background)
+                    Box(modifier = Modifier.fillMaxSize().zIndex(if (currentGear == "R") 20f else 0f)) {
+                        ReverseCameraScreen(isReverseGear = currentGear == "R")
+
+                        if (currentGear == "R") {
                             Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
                         }
                     }
 
+                    // 🌟 LAYER 2: MAP (Above the camera)
+                    Box(modifier = Modifier.fillMaxSize().zIndex(10f)) {
+                        when (currentMapEngine) {
+                            "MAPBOX" -> Viewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, show3dBuildings = show3dBuildings,
+                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it }, onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, onCancelRoute = cancelRouteAction
+                            )
+                            "GOOGLE" -> GoogleViewport(
+                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                                currentNavDistance = currentManeuverDistance, searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                                onRouteDurationUpdated = { currentRouteDuration = it }, onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                                onDestinationSet = { dest -> currentDestination = dest }, onCancelRoute = cancelRouteAction
+                            )
+                        }
+                    }
+
+                    // 🌟 LAYER 3: GEAR SELECTOR (Z-index 30 - Absolutely on top, to allow shifting from R back to D)
                     GearSelector(
                         currentGear = currentGear,
                         onGearSelected = { gear -> manualShiftTo(gear) },
@@ -599,9 +567,11 @@ fun TeslaLayout(activity: MainActivity? = null) {
                             .width(60.dp)
                             .fillMaxHeight(0.5f)
                             .background(Color(0xFF1E1E1E).copy(alpha = 0.9f), RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp))
+                            .zIndex(30f)
                     )
                 }
 
+                // Bottom Menu
                 Dock(
                     modifier = Modifier.height(110.dp),
                     isLandscape = false,
@@ -609,6 +579,10 @@ fun TeslaLayout(activity: MainActivity? = null) {
                 )
             }
         }
+
+        // =========================================================================
+        // FULL-SCREEN OVERLAYS (Settings, Apps, Night Mode)
+        // =========================================================================
 
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }
@@ -680,6 +654,7 @@ fun getBatteryLevel(context: Context): Int {
     return batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
 }
 
+// Mathematical function to determine the distance of a point from a line segment (to calculate route deviation)
 private fun pointToLineDistance(p: Location, a: Location, b: Location): Float {
     val xA = a.longitude
     val yA = a.latitude

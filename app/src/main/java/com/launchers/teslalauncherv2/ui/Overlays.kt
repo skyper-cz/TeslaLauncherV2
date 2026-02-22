@@ -454,6 +454,102 @@ fun SettingsScreen(
                 Button(onClick = { downloadMenuLevel = 1 }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF333333)), modifier = Modifier.fillMaxWidth().height(50.dp)) {
                     Icon(Icons.Default.Language, null); Spacer(modifier = Modifier.width(8.dp)); Text("BROWSE ALL REGIONS")
                 }
+
+                HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 8.dp))
+
+                // 🌟 4. EXPERIMENTAL FEATURES (S MASTER VYPÍNAČEM)
+                var isExperimentalMasterEnabled by remember { mutableStateOf(context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).getBoolean("master_experimental", false)) }
+                var isDashcamEnabled by remember { mutableStateOf(context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).getBoolean("enable_dashcam", false)) }
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, contentDescription = "Warning", tint = Color.Red, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("EXPERIMENTAL FEATURES", color = Color.Red, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // Hlavní (Master) vypínač pro celou sekci
+                    Switch(
+                        checked = isExperimentalMasterEnabled,
+                        onCheckedChange = { isEnabled ->
+                            isExperimentalMasterEnabled = isEnabled
+                            context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("master_experimental", isEnabled).apply()
+
+                            // Pokud to vypneme, natvrdo vypneme i všechny podfunkce
+                            if (!isEnabled) {
+                                isDashcamEnabled = false
+                                context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("enable_dashcam", false).apply()
+                            }
+                        },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.Red, checkedTrackColor = Color(0xFF550000))
+                    )
+                }
+
+                Text("Warning: These features are in testing. They may cause thermal throttling, heavy battery drain, or unexpected crashes. Use at your own risk.", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.padding(bottom = 8.dp))
+
+                // Dashcam Toggle (Aktivní pouze pokud je zapnutý Master switch)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(if (isExperimentalMasterEnabled) Color(0xFF3A0000) else Color(0xFF1A1A1A), RoundedCornerShape(12.dp))
+                        .padding(16.dp)
+                        .clickable(enabled = isExperimentalMasterEnabled) {
+                            isDashcamEnabled = !isDashcamEnabled
+                            context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("enable_dashcam", isDashcamEnabled).apply()
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Videocam, null, tint = if (isExperimentalMasterEnabled) Color.White else Color.DarkGray)
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column {
+                            Text("Dashcam Loop Recording", color = if (isExperimentalMasterEnabled) Color.White else Color.DarkGray, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                            Text("Record USB camera to internal storage", color = if (isExperimentalMasterEnabled) Color.LightGray else Color.DarkGray, fontSize = 12.sp)
+                        }
+                    }
+                    Switch(
+                        checked = isDashcamEnabled,
+                        onCheckedChange = {
+                            if (isExperimentalMasterEnabled) {
+                                isDashcamEnabled = it
+                                context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit().putBoolean("enable_dashcam", it).apply()
+                            }
+                        },
+                        enabled = isExperimentalMasterEnabled,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color.Red,
+                            checkedTrackColor = Color(0xFF550000),
+                            disabledCheckedThumbColor = Color.DarkGray,
+                            disabledUncheckedThumbColor = Color.DarkGray,
+                            disabledUncheckedTrackColor = Color(0xFF222222)
+                        )
+                    )
+                }
+
+                // 🌟 TLAČÍTKO PRO RESET KAMER PŘIDÁNO ZDE
+                Button(
+                    onClick = {
+                        val editor = context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).edit()
+                        val allEntries = context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE).all
+                        var count = 0
+                        allEntries.keys.forEach { key ->
+                            if (key.startsWith("cam_role_")) {
+                                editor.remove(key)
+                                count++
+                            }
+                        }
+                        editor.apply()
+                        Toast.makeText(context, "Deleted roles for $count cameras. Please reconnect camera.", Toast.LENGTH_LONG).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF442222)),
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(50.dp)
+                ) {
+                    Icon(Icons.Default.Delete, null, tint = Color.White)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("RESET CAMERA ROLES", color = Color.White)
+                }
+
             }
 
             // --- LEVEL 1: CONTINENTS ---
