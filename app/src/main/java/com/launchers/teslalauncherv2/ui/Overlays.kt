@@ -1,16 +1,24 @@
+@file:Suppress("OPT_IN_USAGE", "DEPRECATION", "SpellCheckingInspection", "UNUSED_PARAMETER", "UNUSED_ANONYMOUS_PARAMETER")
+
 package com.launchers.teslalauncherv2.ui
 
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.AnimatedVisibility
+
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items // 🌟 OPRAVA IMPORTU: Tohle řeší ty errory s items()
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -103,7 +111,7 @@ fun AppDrawerScreen(onClose: () -> Unit) {
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 100.dp)
                 ) {
-                    items(displayedApps) { app ->
+                    gridItems(displayedApps) { app ->
                         Column(
                             modifier = Modifier.padding(16.dp).clickable {
                                 try { context.startActivity(app.intent) } catch (e: Exception) { Toast.makeText(context, "Cannot launch app", Toast.LENGTH_SHORT).show() }
@@ -540,8 +548,7 @@ fun SettingsScreen(
     }
 }
 
-// 🌟 ZMĚNA: Tuto komponentu už v MainActivity nevoláme (vyskakovací okna jsou zrušená),
-// ale pro jistotu ji tu zatím necháme zachovanou v kódu, kdyby ses k ní chtěl někdy vrátit.
+// ZRUŠENO: Původní popup hlášky. Ponecháno jen jako případná záloha.
 @Composable
 fun TeslaErrorAlert(
     errorCode: String?,
@@ -596,6 +603,79 @@ fun TeslaErrorAlert(
 
             IconButton(onClick = onDismiss) {
                 Icon(Icons.Default.Close, null, tint = Color.White)
+            }
+        }
+    }
+}
+
+// NOVÁ KOMPONENTA PRO VERZI 1.3.5: Smart Error Drawer
+@Composable
+fun SmartErrorDrawer(
+    errors: List<String>,
+    isOpen: Boolean,
+    onClose: () -> Unit,
+    onDismissError: (String) -> Unit
+) {
+    AnimatedVisibility(
+        visible = isOpen,
+        enter = expandVertically(animationSpec = tween(300), expandFrom = Alignment.Top),
+        exit = shrinkVertically(animationSpec = tween(300), shrinkTowards = Alignment.Top),
+        modifier = Modifier.fillMaxWidth().zIndex(100f)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.Black.copy(alpha = 0.9f), RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp))
+                .padding(bottom = 16.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp)) {
+
+                // Záhlaví šuplíku
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Text("VEHICLE DIAGNOSTICS", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Default.ExpandLess, "Close Drawer", tint = Color.Gray)
+                    }
+                }
+
+                HorizontalDivider(color = Color.DarkGray, modifier = Modifier.padding(vertical = 8.dp))
+
+                if (errors.isEmpty()) {
+                    Text("No active faults detected.", color = Color.Gray, fontSize = 14.sp, modifier = Modifier.padding(vertical = 16.dp))
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(items = errors) { errorCode ->
+                            val description = remember(errorCode) { DTCManager.getDescription(errorCode) }
+                            val isCritical = remember(errorCode) { DTCManager.isCritical(errorCode) }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(if (isCritical) Color(0xFF4A0000) else Color(0xFF4A3300), RoundedCornerShape(8.dp))
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (isCritical) Icons.Default.Warning else Icons.Default.Info,
+                                    contentDescription = null,
+                                    tint = if (isCritical) Color.Red else Color.Yellow,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(text = errorCode, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                                    Text(text = description, color = Color.LightGray, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                }
+                                IconButton(onClick = { onDismissError(errorCode) }) {
+                                    Icon(Icons.Default.Check, "Acknowledge", tint = Color.Green)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

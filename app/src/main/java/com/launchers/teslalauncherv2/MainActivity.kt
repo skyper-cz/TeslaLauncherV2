@@ -4,6 +4,7 @@ package com.launchers.teslalauncherv2
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
@@ -47,20 +48,51 @@ import com.launchers.teslalauncherv2.data.NavInstruction
 import com.launchers.teslalauncherv2.data.AppManager
 import com.launchers.teslalauncherv2.map.OfflineMapManager
 import com.launchers.teslalauncherv2.map.NetworkManager
+import com.launchers.teslalauncherv2.map.MapLinkParser
 import com.launchers.teslalauncherv2.obd.ObdDataManager
 import com.launchers.teslalauncherv2.hardware.ReverseCameraScreen
 import com.mapbox.geojson.Point
 
 class MainActivity : ComponentActivity() {
+
+    // Proměnná držící případný cíl získaný z externího linku
+    var externalDestinationPoint: Point? by mutableStateOf(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         hideSystemUI()
 
+        // Zkontrolujeme, jestli apka nevznikla kliknutím na odkaz
+        checkIntentForExternalLocation(intent)
+
         setContent {
             TeslaLauncherTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    TeslaLayout()
+                    TeslaLayout(this)
+                }
+            }
+        }
+    }
+
+    // Při probuzení apky ze spánku
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        checkIntentForExternalLocation(intent)
+    }
+
+    // Zpracování Intentu a vytažení GPS souřadnic
+    private fun checkIntentForExternalLocation(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
+            val coroutineScope = kotlinx.coroutines.CoroutineScope(Dispatchers.Main)
+            coroutineScope.launch {
+                val parsedPoint = MapLinkParser.parseIntentForDestination(intent.data)
+                if (parsedPoint != null) {
+                    externalDestinationPoint = parsedPoint
+                    Toast.makeText(this@MainActivity, "Načítám cíl ze sdíleného odkazu...", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Nepodařilo se přečíst sdílenou adresu", Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -94,7 +126,7 @@ fun TeslaLauncherTheme(content: @Composable () -> Unit) {
 }
 
 @Composable
-fun TeslaLayout() {
+fun TeslaLayout(activity: MainActivity? = null) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
@@ -114,6 +146,16 @@ fun TeslaLayout() {
     var routeCoordinates by remember { mutableStateOf<List<Location>>(emptyList()) }
     var currentDestination by remember { mutableStateOf<Point?>(null) }
     var isRerouting by remember { mutableStateOf(false) }
+
+    // ZACHYTÁVÁNÍ EXTERNÍ LOKACE Z INTENTU
+    LaunchedEffect(activity?.externalDestinationPoint) {
+        val extPoint = activity?.externalDestinationPoint
+        if (extPoint != null) {
+            currentDestination = extPoint
+            routeCoordinates = emptyList()
+            activity.externalDestinationPoint = null
+        }
+    }
 
     val currentInstruction = navInstructionsList.getOrNull(currentInstructionIndex)
 
@@ -145,7 +187,6 @@ fun TeslaLayout() {
     var isLocationPermissionGranted by remember { mutableStateOf(false) }
     var isManualOverrideActive by remember { mutableStateOf(false) }
 
-    // 🌟 PŘIDÁNO: Pípnutí při chybě
     var lastErrorTriggered by remember { mutableStateOf<String?>(null) }
 
     val effectiveSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
@@ -220,13 +261,12 @@ fun TeslaLayout() {
         }
     }
 
-    // 🌟 PŘIDÁNO: Pípnutí při nové OBD chybě
     LaunchedEffect(carStateSnapshot.error) {
         if (!carStateSnapshot.error.isNullOrEmpty() && carStateSnapshot.error != lastErrorTriggered) {
             lastErrorTriggered = carStateSnapshot.error
             try {
                 val toneGen = android.media.ToneGenerator(android.media.AudioManager.STREAM_ALARM, 100)
-                toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 400) // 400ms varovné pípnutí
+                toneGen.startTone(android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 400)
                 toneGen.release()
             } catch (e: Exception) { e.printStackTrace() }
         }
@@ -361,6 +401,41 @@ fun TeslaLayout() {
                             }
                         }
                     }
+                } else if (routeCoordinates.isEmpty() && currentDestination != null && !isRerouting) {
+                    isRerouting = true
+                    Toast.makeText(context, "Plánuji trasu...", Toast.LENGTH_SHORT).show()
+
+                    val currentPoint = Point.fromLngLat(location.longitude, location.latitude)
+
+                    if (currentMapEngine == "GOOGLE") {
+                        NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
+                            scope.launch(Dispatchers.Main) {
+                                if (geo != null) {
+                                    handleGeoJsonUpdate(geo)
+                                    navInstructionsList = instr
+                                    currentRouteDuration = dur
+                                    speedLimitsList = limits
+                                    currentInstructionIndex = 0
+                                    lastMinDistance = Double.MAX_VALUE
+                                }
+                                isRerouting = false
+                            }
+                        }
+                    } else {
+                        NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
+                            scope.launch(Dispatchers.Main) {
+                                if (geo != null) {
+                                    handleGeoJsonUpdate(geo)
+                                    navInstructionsList = instr
+                                    currentRouteDuration = dur
+                                    speedLimitsList = limits
+                                    currentInstructionIndex = 0
+                                    lastMinDistance = Double.MAX_VALUE
+                                }
+                                isRerouting = false
+                            }
+                        }
+                    }
                 }
 
                 val instruction = currentInstruction
@@ -376,15 +451,7 @@ fun TeslaLayout() {
                             currentInstructionIndex++
                             lastMinDistance = Double.MAX_VALUE
                         } else {
-                            navInstructionsList = emptyList()
-                            routeGeoJson = null
-                            routeCoordinates = emptyList()
-                            currentManeuverDistance = null
-                            currentRouteDuration = null
-                            speedLimitsList = emptyList()
-                            currentSpeedLimit = null
-                            currentDestination = null
-                            lastMinDistance = Double.MAX_VALUE
+                            cancelRouteAction()
                             Toast.makeText(context, "You have arrived!", Toast.LENGTH_LONG).show()
                         }
                     } else {
@@ -441,33 +508,35 @@ fun TeslaLayout() {
                 )
 
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    if (currentGear != "R") {
-                        when (currentMapEngine) {
-                            "MAPBOX" -> Viewport(
-                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
-                                show3dBuildings = show3dBuildings,
-                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                                onRouteDurationUpdated = { currentRouteDuration = it },
-                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest },
-                                onCancelRoute = cancelRouteAction
-                            )
-                            "GOOGLE" -> GoogleViewport(
-                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
-                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                                onRouteDurationUpdated = { currentRouteDuration = it },
-                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest },
-                                onCancelRoute = cancelRouteAction
-                            )
-                        }
-                    } else {
+                    // MAPA BĚŽÍ VŽDY V POZADÍ
+                    when (currentMapEngine) {
+                        "MAPBOX" -> Viewport(
+                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                            currentNavDistance = currentManeuverDistance,
+                            show3dBuildings = show3dBuildings,
+                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                            onRouteDurationUpdated = { currentRouteDuration = it },
+                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                            onDestinationSet = { dest -> currentDestination = dest },
+                            onCancelRoute = cancelRouteAction
+                        )
+                        "GOOGLE" -> GoogleViewport(
+                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                            currentNavDistance = currentManeuverDistance,
+                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                            onRouteDurationUpdated = { currentRouteDuration = it },
+                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                            onDestinationSet = { dest -> currentDestination = dest },
+                            onCancelRoute = cancelRouteAction
+                        )
+                    }
+
+                    // KAMERA PŘEKRÝVÁ MAPU PŘI ZPÁTEČCE
+                    if (currentGear == "R") {
                         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
                             ReverseCameraScreen()
                             Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
@@ -487,33 +556,35 @@ fun TeslaLayout() {
                 )
 
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                    if (currentGear != "R") {
-                        when (currentMapEngine) {
-                            "MAPBOX" -> Viewport(
-                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
-                                show3dBuildings = show3dBuildings,
-                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                                onRouteDurationUpdated = { currentRouteDuration = it },
-                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest },
-                                onCancelRoute = cancelRouteAction
-                            )
-                            "GOOGLE" -> GoogleViewport(
-                                modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
-                                currentNavDistance = currentManeuverDistance, // 🌟 Předáváme vzdálenost dolů
-                                searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
-                                onRouteGeoJsonUpdated = handleGeoJsonUpdate,
-                                onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
-                                onRouteDurationUpdated = { currentRouteDuration = it },
-                                onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
-                                onDestinationSet = { dest -> currentDestination = dest },
-                                onCancelRoute = cancelRouteAction
-                            )
-                        }
-                    } else {
+                    // MAPA BĚŽÍ VŽDY V POZADÍ
+                    when (currentMapEngine) {
+                        "MAPBOX" -> Viewport(
+                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                            currentNavDistance = currentManeuverDistance,
+                            show3dBuildings = show3dBuildings,
+                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                            onRouteDurationUpdated = { currentRouteDuration = it },
+                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                            onDestinationSet = { dest -> currentDestination = dest },
+                            onCancelRoute = cancelRouteAction
+                        )
+                        "GOOGLE" -> GoogleViewport(
+                            modifier = Modifier.fillMaxSize(), isNightPanel = isNightPanel, is3dModeExternal = is3dMapMode,
+                            currentNavDistance = currentManeuverDistance,
+                            searchEngine = currentSearchEngine, currentLocation = currentGpsLocation, routeGeoJson = routeGeoJson,
+                            onRouteGeoJsonUpdated = handleGeoJsonUpdate,
+                            onInstructionUpdated = { list -> navInstructionsList = list; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE },
+                            onRouteDurationUpdated = { currentRouteDuration = it },
+                            onSpeedLimitsUpdated = { limits -> speedLimitsList = limits },
+                            onDestinationSet = { dest -> currentDestination = dest },
+                            onCancelRoute = cancelRouteAction
+                        )
+                    }
+
+                    // KAMERA PŘEKRÝVÁ MAPU PŘI ZPÁTEČCE
+                    if (currentGear == "R") {
                         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
                             ReverseCameraScreen()
                             Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
@@ -538,8 +609,6 @@ fun TeslaLayout() {
                 )
             }
         }
-
-        // 🌟 ZMĚNA: Tady původně bylo volání TeslaErrorAlert, které jsme smazali.
 
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }

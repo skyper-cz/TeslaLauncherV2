@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <usb-device class="14" />
+    <usb-device vendor-id="1054" product-id="16533" />
 
-    <usb-device />
+    <usb-device class="14" subclass="1" />
+    <usb-device class="239" subclass="2" />
 </resources>
