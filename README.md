@@ -1,7 +1,7 @@
 # 🚗 TeslaLauncher V2
 
 [![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android)](#)
-[![Version](https://img.shields.io/badge/Version-1.3.4-blue)](#)
+[![Version](https://img.shields.io/badge/Version-1.3.6-blue)](#)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A modern, clean, and blazing-fast Car Launcher for Android head units and tablets. Inspired by the minimalist and intuitive design of Tesla infotainment systems. This project seamlessly integrates navigation, live OBD2 telemetry, and media controls into a single, distraction-free interface.
@@ -11,17 +11,18 @@ A modern, clean, and blazing-fast Car Launcher for Android head units and tablet
 
 ---
 
-## 🚀 Latest Update: v1.2.0 (The Odyssey Update)
-This major release brings critical architectural improvements, flawless multi-step navigation routing, and pixel-perfect UI adaptation for all display types.
+## 🚀 Latest Update: v1.3.6 (The Athena Update)
 
-* **Massive Codebase Refactoring:** Split the monolithic main file into 4 logical modules (`MainActivity`, `Components`, `MapComponents`, `Overlays`) for drastically improved performance and maintainability.
-* **Instruction Chaining:** The navigation engine now correctly parses the full route array from Mapbox/Google APIs. The system automatically transitions to the next maneuver once the vehicle is within 30 meters of a node.
-* **Live Distance Countdown:** Distance to the next turn now counts down smoothly in real-time based on live GPS coordinates.
-* **Responsive Layout Support:** The dashboard now perfectly adapts to Landscape and Portrait orientations, dynamically resizing the media player, shifting elements, and preventing UI overlaps.
-* **Reverse Gear Lock:** Manual "R" shifts are now protected. The automated OBD logic will no longer override reverse back into "P" when speed drops below 4 km/h.
-* **DTC Engine Diagnostics:** The ELM327 parser now polls for engine trouble codes (`03` command) every 10 seconds and displays active fault codes (e.g., P0171) directly on the status bar.
+This update transforms the launcher into a fully functional Dashcam. We've introduced a true Background Camera Engine, smart USB role assignment, and an all-new swipeable dashboard.
 
----
+## 📹 Dashcam & Background Engine
+* **Background Camera Engine:** The USB camera now runs continuously and invisibly beneath the map layer. It seamlessly jumps to the foreground only when reverse (R) is engaged.
+* **Loop Recording (Dashcam):** Added continuous background video recording (H.264, MP4). It automatically manages storage with a 1GB rolling loop, deleting the oldest files to prevent memory overflow.
+* **Smart Role Assignment:** Upon plugging in a new USB camera, a system dialog instantly prompts you to assign it a permanent role (`FRONT` for Dashcam, `REAR` for Reverse).
+
+## 🎛️ UI & UX Improvements
+* **Swipeable Dashboard:** The main instrument cluster is now a paginated view. Swipe left/right to reveal a dedicated, animated Dashcam Control Panel.
+* **Experimental Menu:** Added a new "Experimental Features" section in Settings with a Master Switch to safely toggle heavy features like background recording and prevent accidental battery drain.
 
 ## ✨ Key Features
 
@@ -34,6 +35,8 @@ This major release brings critical architectural improvements, flawless multi-st
 * 🌙 **Night Panel:** A minimalist mode for nighttime highway driving. Dims the maps and displays only a giant speedometer and critical engine warnings.
 * 📱 **Full-Featured Launcher:** Use it as a standalone app or set it as your default Android home screen (includes a custom *App Drawer* for all installed apps).
 * 📷 **Reverse Camera Support:** Ready for UVC USB camera integration automatically triggered when shifting into Reverse (R).
+* 📷 **Dascam mode Support:** Ready for UVC USB camera integration automatically recording while driving.
+* **Note** That in current version the Dashcam mode and Reverse camera mode cannot work at the same time.
 
 ---
 
