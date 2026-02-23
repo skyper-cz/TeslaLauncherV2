@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
@@ -16,78 +17,38 @@ import android.util.Log
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog // 🌟 Přidán import pro Dialog
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import com.serenegiant.usb.USBMonitor
 import com.serenegiant.usb.UVCCamera
 import com.serenegiant.usb.UVCParam
+import com.serenegiant.usb.IFrameCallback
+import java.io.File
+import java.io.FileOutputStream
 
-private const val TAG = "UVC_CAMERA_DEBUG"
-private const val ACTION_USB_PERMISSION = "com.launchers.teslalauncherv2.USB_PERMISSION"
+// Imports for AI and Coroutines
+import com.launchers.teslalauncherv2.ai.AiManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
-@Composable
-fun ReverseCameraScreen(isReverseGear: Boolean) {
-    val refreshTrigger = remember { mutableIntStateOf(0) }
-    var statusMessage by remember { mutableStateOf("Initializing UVC Engine...") }
-    var isRunning by remember { mutableStateOf(false) }
-
-    Box(modifier = Modifier.fillMaxSize().background(if (isReverseGear) Color.Black else Color.Transparent)) {
-        USBCameraView(
-            refreshTriggerState = refreshTrigger,
-            onStatusChange = { running, msg ->
-                isRunning = running
-                statusMessage = msg
-            }
-        )
-
-        if (isReverseGear) {
-            if (!isRunning) {
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = statusMessage,
-                        color = if (statusMessage.contains("Error") || statusMessage.contains("Denied") || statusMessage.contains("Timeout")) Color.Red else Color.Gray,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 24.dp)
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(onClick = {
-                        Log.d(TAG, "User triggered manual reconnection")
-                        refreshTrigger.intValue++
-                    }, colors = ButtonDefaults.buttonColors(containerColor = Color.DarkGray)) {
-                        Icon(Icons.Default.Refresh, "Retry")
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("RETRY CONNECTION")
-                    }
-                }
-            }
-            GuideLinesOverlay()
-        }
-    }
-}
+const val TAG = "UVC_CAMERA_DEBUG"
+const val ACTION_USB_PERMISSION = "com.launchers.teslalauncherv2.USB_PERMISSION"
 
 @Composable
 fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boolean, String) -> Unit) {
@@ -96,10 +57,14 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
 
     val sharedPrefs = remember { context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE) }
     val isDashcamEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("enable_dashcam", false) && sharedPrefs.getBoolean("master_experimental", false)) }
+    val isAiEnabled by remember { mutableStateOf(sharedPrefs.getBoolean("enable_ai", false) && sharedPrefs.getBoolean("master_experimental", false)) }
 
     var mUVCCamera by remember { mutableStateOf<UVCCamera?>(null) }
     var mPreviewSurface by remember { mutableStateOf<SurfaceTexture?>(null) }
     var mMediaRecorder by remember { mutableStateOf<MediaRecorder?>(null) }
+
+    var mTextureView by remember { mutableStateOf<TextureView?>(null) }
+    var currentCameraRole by remember { mutableStateOf("NONE") }
 
     var activeWidth by remember { mutableIntStateOf(640) }
     var activeHeight by remember { mutableIntStateOf(480) }
@@ -126,15 +91,42 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
         mUVCCamera = null
     }
 
-    fun startPreviewSafely() {
-        val camera = mUVCCamera
-        val surface = mPreviewSurface
-        if (camera != null && surface != null) {
-            try {
+    fun startPreviewSafely(cam: UVCCamera? = mUVCCamera, role: String = currentCameraRole) {
+        val camera = cam ?: return
+
+        try {
+            // Setup Native Frame Callback for AI (Bypasses the UI entirely)
+            var lastAiProcessTime = 0L
+
+            camera.setFrameCallback(IFrameCallback { frame ->
+                if (isAiEnabled && role == "FRONT") {
+                    val currentTime = System.currentTimeMillis()
+                    if (currentTime - lastAiProcessTime >= 500) {
+                        lastAiProcessTime = currentTime
+                        frame?.let { buffer ->
+                            try {
+                                buffer.clear()
+                                val bitmap = Bitmap.createBitmap(activeWidth, activeHeight, Bitmap.Config.RGB_565)
+                                bitmap.copyPixelsFromBuffer(buffer)
+
+                                // Launch AI processing on a background thread so we do not block the USB stream
+                                CoroutineScope(Dispatchers.Default).launch {
+                                    val result = AiManager.analyzeFrame(bitmap)
+                                    Log.d("AI_VISION", result)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("AI_VISION", "Native frame conversion error", e)
+                            }
+                        }
+                    }
+                }
+            }, UVCCamera.PIXEL_FORMAT_RGB565)
+
+            if (role == "FRONT") {
                 if (isDashcamEnabled && unassignedDevice == null) {
                     val newVideoPath = DashcamManager.getNewOutputFilePath(context)
                     if (newVideoPath != null) {
-                        Log.i(TAG, "Dashcam ENABLED. Recording to: $newVideoPath")
+                        Log.i(TAG, "Dashcam ENABLED for FRONT. Recording to: $newVideoPath")
 
                         val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder()
                         recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
@@ -153,26 +145,28 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
                         mMediaRecorder = recorder
                         onStatusChange(true, "Recording Dashcam ($activeWidth x $activeHeight)...")
                     } else {
-                        onStatusChange(false, "Storage Error. Falling back to preview.")
-                        camera.setPreviewTexture(surface)
-                        camera.startPreview()
+                        onStatusChange(false, "Storage Error.")
                     }
                 } else {
+                    onStatusChange(false, "Dashcam disabled in settings.")
+                }
+            } else if (role == "REAR") {
+                val surface = mPreviewSurface
+                if (surface != null) {
                     camera.setPreviewTexture(surface)
                     camera.startPreview()
                     onStatusChange(true, "")
+                } else {
+                    onStatusChange(false, "Waiting for screen...")
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Native preview start failed", e)
-                onStatusChange(false, "Engine Error: ${e.message}")
-                releaseCamera()
             }
+        } catch (e: Exception) {
+            Log.e(TAG, "Native preview start failed", e)
+            onStatusChange(false, "Engine Error: ${e.message}")
         }
     }
 
     DisposableEffect(refreshTriggerState.value) {
-
-        // 🌟 OPRAVA: Deklarujeme usbMonitor předem, abychom ho mohli uvnitř volat
         var usbMonitor: USBMonitor? = null
 
         val listener = object : USBMonitor.OnDeviceConnectListener {
@@ -181,7 +175,7 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
                 if (device != null) {
                     try {
                         if (usbManager.hasPermission(device)) {
-                            usbMonitor?.requestPermission(device) // Nyní to kompilátor zná!
+                            usbMonitor?.requestPermission(device)
                         } else {
                             val intent = Intent(ACTION_USB_PERMISSION).apply { setPackage(context.packageName) }
                             val flags = PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
@@ -201,9 +195,12 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
                     ctrlBlock?.let { block ->
                         camera.open(block)
 
+                        var savedRole = "NONE"
                         if (device != null) {
                             val camId = "${device.vendorId}_${device.productId}"
-                            val savedRole = sharedPrefs.getString("cam_role_$camId", "NONE")
+                            savedRole = sharedPrefs.getString("cam_role_$camId", "NONE") ?: "NONE"
+                            currentCameraRole = savedRole
+
                             if (savedRole == "NONE") {
                                 Log.i(TAG, "Unassigned camera detected! Triggering Role UI.")
                                 unassignedDevice = device
@@ -247,7 +244,7 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
 
                         if (sizeSet) {
                             mUVCCamera = camera
-                            startPreviewSafely()
+                            startPreviewSafely(cam = camera, role = savedRole)
                         } else {
                             throw Exception("No supported format.")
                         }
@@ -262,7 +259,6 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
             override fun onCancel(device: UsbDevice?) { onStatusChange(false, "Permission Denied") }
         }
 
-        // Tady monitor skutečně vytvoříme a předáme mu ten Listener nahoře
         usbMonitor = USBMonitor(context, listener)
 
         val usbReceiver = object : BroadcastReceiver() {
@@ -324,16 +320,25 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
         AndroidView(
             factory = { ctx ->
                 TextureView(ctx).apply {
+                    mTextureView = this
+                    isOpaque = true
+
                     layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                     surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                         override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+                            Log.d(TAG, "SurfaceTexture Available")
                             mPreviewSurface = surface
                             startPreviewSafely()
                         }
                         override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, w: Int, h: Int) {}
                         override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                            releaseCamera()
+                            Log.d(TAG, "SurfaceTexture Destroyed")
                             mPreviewSurface = null
+                            mTextureView = null
+
+                            if (currentCameraRole != "FRONT") {
+                                try { mUVCCamera?.stopPreview() } catch (e: Exception) {}
+                            }
                             return true
                         }
                         override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
@@ -344,7 +349,7 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
         )
 
         if (unassignedDevice != null) {
-            Dialog(onDismissRequest = { /* Musí vybrat! */ }) {
+            Dialog(onDismissRequest = { /* Must select an option */ }) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -380,6 +385,8 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
                                     val camId = "${unassignedDevice!!.vendorId}_${unassignedDevice!!.productId}"
                                     sharedPrefs.edit().putString("cam_role_$camId", "REAR").apply()
                                     unassignedDevice = null
+                                    releaseCamera()
+                                    refreshTriggerState.value++
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF000044)),
                                 modifier = Modifier.height(60.dp)
@@ -391,39 +398,5 @@ fun USBCameraView(refreshTriggerState: MutableState<Int>, onStatusChange: (Boole
                 }
             }
         }
-    }
-}
-
-@Composable
-fun GuideLinesOverlay() {
-    Canvas(modifier = Modifier.fillMaxSize()) {
-        val w = size.width
-        val h = size.height
-        val bottomWidth = w * 0.6f
-        val topWidth = w * 0.4f
-        val endY = h * 0.3f
-        val leftStart = (w - bottomWidth) / 2
-        val rightStart = leftStart + bottomWidth
-        val leftEnd = (w - topWidth) / 2
-        val rightEnd = leftEnd + topWidth
-
-        fun drawZone(y1: Float, y2: Float, color: Color) {
-            val path = Path().apply {
-                val f1 = (h - y1) / (h - endY)
-                val f2 = (h - y2) / (h - endY)
-                val l1 = leftStart + (leftEnd - leftStart) * f1
-                val r1 = rightStart + (rightEnd - rightStart) * f1
-                val l2 = leftStart + (leftEnd - leftStart) * f2
-                val r2 = rightStart + (rightEnd - rightStart) * f2
-                moveTo(l1, y1); lineTo(l2, y2)
-                moveTo(r1, y1); lineTo(r2, y2)
-                moveTo(l1, y1); lineTo(r1, y1)
-            }
-            drawPath(path, color, style = Stroke(width = 5.dp.toPx()))
-        }
-
-        drawZone(h, h * 0.85f, Color.Red)
-        drawZone(h * 0.85f, h * 0.65f, Color.Yellow)
-        drawZone(h * 0.65f, endY, Color.Green)
     }
 }

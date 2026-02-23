@@ -28,11 +28,13 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -55,20 +57,19 @@ import com.launchers.teslalauncherv2.obd.ObdDataManager
 import com.launchers.teslalauncherv2.hardware.ReverseCameraScreen
 import com.mapbox.geojson.Point
 
-// --- PŘIDANÝ IMPORT PRO AiManager ---
+// Imported for AI features
 import com.launchers.teslalauncherv2.ai.AiManager
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
-    // Variable holding a potential destination obtained from an external link (e.g., Google Maps sharing)
     var externalDestinationPoint: Point? by mutableStateOf(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        hideSystemUI() // Hides the system top and bottom bars for full-screen mode
+        hideSystemUI()
 
-        // Check if the app was launched by clicking an external link
         checkIntentForExternalLocation(intent)
 
         setContent {
@@ -80,14 +81,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Called when the app wakes up from sleep (e.g., clicking a link while it was running in the background)
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         checkIntentForExternalLocation(intent)
     }
 
-    // Processing the Intent and extracting GPS coordinates from a shared link
     private fun checkIntentForExternalLocation(intent: Intent?) {
         if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
             val coroutineScope = kotlinx.coroutines.CoroutineScope(Dispatchers.Main)
@@ -105,7 +104,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        hideSystemUI() // Failsafe to ensure system bars don't reappear after returning to the app
+        hideSystemUI()
     }
 
     private fun hideSystemUI() {
@@ -137,7 +136,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
     val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     val scope = rememberCoroutineScope()
 
-    // Load Google Maps API key from the manifest
     val googleApiKey = remember {
         try {
             val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA)
@@ -145,19 +143,9 @@ fun TeslaLayout(activity: MainActivity? = null) {
         } catch (e: Exception) { "" }
     }
 
-    // =========================================================================
-    // 1. STATE VARIABLES AND SETTINGS
-    // =========================================================================
-
-    // --- INSTANCE AiManageru ---
-    // (Pokud tvůj konstruktor vyžaduje context, změň to na AiManager(context))
-    val aiManager = remember { AiManager() }
-
-    // OBD data (Speed, RPM, Engine faults)
     val carStateFlow = ObdDataManager.carState
     val carStateSnapshot by carStateFlow.collectAsState()
 
-    // Navigation data (Instructions, speed limits, map routes)
     var navInstructionsList by remember { mutableStateOf<List<NavInstruction>>(emptyList()) }
     var currentInstructionIndex by remember { mutableIntStateOf(0) }
     var currentManeuverDistance by remember { mutableStateOf<Int?>(null) }
@@ -168,7 +156,8 @@ fun TeslaLayout(activity: MainActivity? = null) {
     var currentDestination by remember { mutableStateOf<Point?>(null) }
     var isRerouting by remember { mutableStateOf(false) }
 
-    // Intercepting external location from intent
+    val aiVisionState by AiManager.visionState.collectAsState()
+
     LaunchedEffect(activity?.externalDestinationPoint) {
         val extPoint = activity?.externalDestinationPoint
         if (extPoint != null) {
@@ -186,7 +175,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
     var batteryLevel by remember { mutableIntStateOf(getBatteryLevel(context)) }
     var currentGpsLocation by remember { mutableStateOf<Location?>(null) }
 
-    // User settings from SharedPreferences
     val sharedPrefs = remember { context.getSharedPreferences("TeslaSettings", Context.MODE_PRIVATE) }
     var savedObdMacAddress by remember { mutableStateOf(sharedPrefs.getString("obd_mac", "00:10:CC:4F:36:03") ?: "") }
     var currentMapEngine by remember { mutableStateOf(sharedPrefs.getString("map_engine", "MAPBOX") ?: "MAPBOX") }
@@ -196,15 +184,13 @@ fun TeslaLayout(activity: MainActivity? = null) {
     var autoShiftGear by remember { mutableStateOf(sharedPrefs.getBoolean("auto_shift_gear", true)) }
     var enableAiFeatures by remember { mutableStateOf(sharedPrefs.getBoolean("enable_ai", false)) }
 
-    // UI overlays control
     var isNightPanel by rememberSaveable { mutableStateOf(false) }
     var isSettingsOpen by rememberSaveable { mutableStateOf(false) }
     var isAppDrawerOpen by rememberSaveable { mutableStateOf(false) }
-    var isErrorDrawerOpen by remember { mutableStateOf(false) } // Opens the top drawer with errors
-    val activeErrors = remember { mutableStateListOf<String>() } // List of active OBD errors
+    var isErrorDrawerOpen by remember { mutableStateOf(false) }
+    val activeErrors = remember { mutableStateListOf<String>() }
     var lastErrorTriggered by remember { mutableStateOf<String?>(null) }
 
-    // Gear shift logic (P/R/N/D)
     var currentGear by rememberSaveable { mutableStateOf("P") }
     var lastManualShiftTime by remember { mutableLongStateOf(0L) }
     var is3dMapMode by remember { mutableStateOf(false) }
@@ -212,14 +198,44 @@ fun TeslaLayout(activity: MainActivity? = null) {
     var isLocationPermissionGranted by remember { mutableStateOf(false) }
     var isManualOverrideActive by remember { mutableStateOf(false) }
 
-    // Final speed (If OBD is connected, take from car. Otherwise, fallback to GPS)
     val effectiveSpeed = if (carStateSnapshot.isConnected) carStateSnapshot.speed else currentSpeedGps
 
-    // =========================================================================
-    // 2. FUNCTIONS AND EFFECTS (BACKGROUND LOGIC)
-    // =========================================================================
+    var activeAiSpeedLimit by remember { mutableStateOf<Int?>(null) }
+    var lastHeading by remember { mutableStateOf<Float?>(null) }
 
-    // Decode navigation route (GeoJSON) into actual coordinates for GPS comparison
+    LaunchedEffect(aiVisionState.lastUpdate) {
+        if (aiVisionState.detectedSpeedLimit != null) {
+            activeAiSpeedLimit = aiVisionState.detectedSpeedLimit
+        }
+    }
+
+    val effectiveSpeedLimit = activeAiSpeedLimit ?: currentSpeedLimit
+
+    LaunchedEffect(currentGpsLocation) {
+        val loc = currentGpsLocation
+        if (loc != null && loc.hasBearing()) {
+            val currentHeading = loc.bearing
+            if (lastHeading != null) {
+                var diff = Math.abs(currentHeading - lastHeading!!)
+                if (diff > 180f) diff = 360f - diff
+
+                if (diff > 40f && loc.speed > 1.5f) {
+                    activeAiSpeedLimit = null
+                }
+            }
+            lastHeading = currentHeading
+        }
+    }
+
+    LaunchedEffect(effectiveSpeedLimit, activeAiSpeedLimit, currentSpeedLimit, aiVisionState.lastUpdate) {
+        android.util.Log.d("SPEED_LIMIT_DEBUG",
+            "Limit na displeji: $effectiveSpeedLimit " +
+                    "| AI hlásí: $activeAiSpeedLimit " +
+                    "| Mapa hlásí: $currentSpeedLimit " +
+                    "| AI Update: ${aiVisionState.lastUpdate}"
+        )
+    }
+
     val handleGeoJsonUpdate: (String?) -> Unit = { geo ->
         routeGeoJson = geo
         if (geo != null) {
@@ -263,7 +279,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
         enableAiFeatures = sharedPrefs.getBoolean("enable_ai", false)
     }
 
-    // Blocks auto-shifting between P/D for 8 seconds if the user shifts manually
     LaunchedEffect(lastManualShiftTime) {
         if (lastManualShiftTime > 0) {
             isManualOverrideActive = true
@@ -281,7 +296,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
         }
     }
 
-    // Auto-shifting: Above 5 km/h shift to 'D', below 4 km/h shift to 'P' (If not disabled by user)
     LaunchedEffect(effectiveSpeed, currentGear, isManualOverrideActive, autoShiftGear) {
         if (currentGear == "D") is3dMapMode = true else if (currentGear == "P") is3dMapMode = false
 
@@ -293,7 +307,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
         }
     }
 
-    // Listen for OBD errors. If a new error arrives, beep and add it to the ErrorDrawer.
     LaunchedEffect(carStateSnapshot.error) {
         if (!carStateSnapshot.error.isNullOrEmpty() && carStateSnapshot.error != lastErrorTriggered) {
             lastErrorTriggered = carStateSnapshot.error
@@ -310,15 +323,9 @@ fun TeslaLayout(activity: MainActivity? = null) {
 
     LaunchedEffect(enableAiFeatures) {
         if (enableAiFeatures) {
-            // Zde zavoláš metodu tvého AiManageru, která odstartuje jeho práci na pozadí
-            // Například:
-            // aiManager.startBackgroundAnalysis()
-
-            // Poznámka: Můžeš mu sem předávat třeba aktuální 'effectiveSpeed'
-            // nebo 'carStateSnapshot', pokud AI analyzuje jízdu.
+            AiManager.initialize(context)
         } else {
-            // Zde by měla být metoda pro zastavení AI, pokud to uživatel v nastavení vypne
-            // aiManager.stop()
+            AiManager.close()
         }
     }
 
@@ -330,10 +337,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
             } else { currentGear = gear }
         } else currentGear = gear
     }
-
-    // =========================================================================
-    // 3. GPS LOOP AND LOCATION TRACKING (Runs as long as the app is open)
-    // =========================================================================
 
     val locationPermissionLauncher = rememberLauncherForActivityResult(contract = ActivityResultContracts.RequestMultiplePermissions(), onResult = { permissions ->
         val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
@@ -363,64 +366,71 @@ fun TeslaLayout(activity: MainActivity? = null) {
                 currentGpsLocation = location
                 if (location.hasSpeed()) currentSpeedGps = (location.speed * 3.6f).toInt()
 
-                // Handle route deviation and recalculation (Rerouting)
-                if (routeCoordinates.isNotEmpty() && speedLimitsList.isNotEmpty()) {
-                    var minDistance = Float.MAX_VALUE
-                    var closestSegmentIndex = 0
+                scope.launch(Dispatchers.Default) {
 
-                    for (i in 0 until routeCoordinates.size - 1) {
-                        val a = routeCoordinates[i]
-                        val b = routeCoordinates[i + 1]
-                        val dist = pointToLineDistance(location, a, b)
-                        if (dist < minDistance) { minDistance = dist; closestSegmentIndex = i }
-                    }
+                    if (routeCoordinates.isNotEmpty() && speedLimitsList.isNotEmpty()) {
+                        var minDistance = Float.MAX_VALUE
+                        var closestSegmentIndex = 0
 
-                    val limitIndex = closestSegmentIndex.coerceAtMost(speedLimitsList.size - 1)
-                    currentSpeedLimit = speedLimitsList.getOrNull(limitIndex)
+                        for (i in 0 until routeCoordinates.size - 1) {
+                            val a = routeCoordinates[i]
+                            val b = routeCoordinates[i + 1]
+                            val dist = pointToLineDistance(location, a, b)
+                            if (dist < minDistance) { minDistance = dist; closestSegmentIndex = i }
+                        }
 
-                    if (minDistance > 50f && location.accuracy < 30f && currentDestination != null && !isRerouting) {
-                        isRerouting = true
-                        Toast.makeText(context, "Rerouting...", Toast.LENGTH_SHORT).show()
-                        val currentPoint = Point.fromLngLat(location.longitude, location.latitude)
+                        val limitIndex = closestSegmentIndex.coerceAtMost(speedLimitsList.size - 1)
+                        currentSpeedLimit = speedLimitsList.getOrNull(limitIndex)
 
-                        if (currentMapEngine == "GOOGLE") {
-                            NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
-                                scope.launch(Dispatchers.Main) {
-                                    if (geo != null) { handleGeoJsonUpdate(geo); navInstructionsList = instr; currentRouteDuration = dur; speedLimitsList = limits; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }
-                                    isRerouting = false
-                                }
+                        if (minDistance > 50f && location.accuracy < 30f && currentDestination != null && !isRerouting) {
+                            isRerouting = true
+
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "Rerouting...", Toast.LENGTH_SHORT).show()
                             }
-                        } else {
-                            NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
-                                scope.launch(Dispatchers.Main) {
-                                    if (geo != null) { handleGeoJsonUpdate(geo); navInstructionsList = instr; currentRouteDuration = dur; speedLimitsList = limits; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }
-                                    isRerouting = false
+
+                            val currentPoint = Point.fromLngLat(location.longitude, location.latitude)
+
+                            if (currentMapEngine == "GOOGLE") {
+                                NetworkManager.fetchGoogleRoute(currentPoint, currentDestination!!, googleApiKey) { geo, instr, dur, limits ->
+                                    scope.launch(Dispatchers.Main) {
+                                        if (geo != null) { handleGeoJsonUpdate(geo); navInstructionsList = instr; currentRouteDuration = dur; speedLimitsList = limits; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }
+                                        isRerouting = false
+                                    }
+                                }
+                            } else {
+                                NetworkManager.fetchRouteManual(currentPoint, currentDestination!!, context) { geo, instr, dur, limits ->
+                                    scope.launch(Dispatchers.Main) {
+                                        if (geo != null) { handleGeoJsonUpdate(geo); navInstructionsList = instr; currentRouteDuration = dur; speedLimitsList = limits; currentInstructionIndex = 0; lastMinDistance = Double.MAX_VALUE }
+                                        isRerouting = false
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // Check off completed navigation instructions (turns)
-                val instruction = currentInstruction
-                if (instruction?.maneuverPoint != null && !isRerouting) {
-                    val target = Location("T").apply {
-                        latitude = instruction.maneuverPoint.latitude()
-                        longitude = instruction.maneuverPoint.longitude()
-                    }
-                    val dist = location.distanceTo(target).toInt()
-
-                    if (dist < 30 || (dist > lastMinDistance && lastMinDistance < 150)) {
-                        if (currentInstructionIndex < navInstructionsList.size - 1) {
-                            currentInstructionIndex++
-                            lastMinDistance = Double.MAX_VALUE
-                        } else {
-                            cancelRouteAction()
-                            Toast.makeText(context, "You have arrived!", Toast.LENGTH_LONG).show()
+                    val instruction = currentInstruction
+                    if (instruction?.maneuverPoint != null && !isRerouting) {
+                        val target = Location("T").apply {
+                            latitude = instruction.maneuverPoint.latitude()
+                            longitude = instruction.maneuverPoint.longitude()
                         }
-                    } else {
-                        if (dist < lastMinDistance) lastMinDistance = dist.toDouble()
-                        currentManeuverDistance = dist
+                        val dist = location.distanceTo(target).toInt()
+
+                        withContext(Dispatchers.Main) {
+                            if (dist < 30 || (dist > lastMinDistance && lastMinDistance < 150)) {
+                                if (currentInstructionIndex < navInstructionsList.size - 1) {
+                                    currentInstructionIndex++
+                                    lastMinDistance = Double.MAX_VALUE
+                                } else {
+                                    cancelRouteAction()
+                                    Toast.makeText(context, "You have arrived!", Toast.LENGTH_LONG).show()
+                                }
+                            } else {
+                                if (dist < lastMinDistance) lastMinDistance = dist.toDouble()
+                                currentManeuverDistance = dist
+                            }
+                        }
                     }
                 }
             }
@@ -439,20 +449,13 @@ fun TeslaLayout(activity: MainActivity? = null) {
     }
 
 
-    // =========================================================================
-    // 4. MAIN UI RENDERING (Z-INDEX MAGIC)
-    // =========================================================================
-
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
 
-        // --- LANDSCAPE MODE ---
         if (isLandscape) {
             Row(modifier = Modifier.fillMaxSize()) {
 
-                // Left panel (Gauges and bottom menu)
                 Column(modifier = Modifier.fillMaxWidth(0.32f).fillMaxHeight()) {
 
-                    // Box for gauges and top error drawer
                     Box(modifier = Modifier.weight(0.60f).fillMaxWidth()) {
                         InstrumentClusterWrapper(
                             modifier = Modifier.fillMaxSize().clickable { isErrorDrawerOpen = !isErrorDrawerOpen },
@@ -460,7 +463,8 @@ fun TeslaLayout(activity: MainActivity? = null) {
                             carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
                             instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
                             gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
-                            speedLimit = currentSpeedLimit, showSpeedLimit = showSpeedLimitSetting
+                            speedLimit = effectiveSpeedLimit,
+                            showSpeedLimit = showSpeedLimitSetting
                         )
                         SmartErrorDrawer(
                             errors = activeErrors, isOpen = isErrorDrawerOpen,
@@ -477,30 +481,39 @@ fun TeslaLayout(activity: MainActivity? = null) {
                     )
                 }
 
-                // Middle column: Gear selector
                 GearSelector(
                     currentGear = currentGear,
                     onGearSelected = { gear -> manualShiftTo(gear) },
                     modifier = Modifier.width(60.dp).fillMaxHeight()
                 )
 
-                // Right panel: Map and camera layering
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
 
-                    // 🌟 LAYER 1: CAMERA (Z-index 0 or 20)
-                    // If 'D' (or anything other than 'R') is engaged, z-index is 0.
-                    // The camera runs COMPLETELY AT THE BOTTOM under the map (invisible, but can record Dashcam to a file).
-                    // If 'R' is engaged, z-index changes to 20 and the camera moves above the map, overlapping it.
-                    Box(modifier = Modifier.fillMaxSize().zIndex(if (currentGear == "R") 20f else 0f)) {
+                    val cameraAlpha = if (currentGear == "R") 1f else 0.01f
+                    val cameraZIndex = if (currentGear == "R") 30f else 0f
+
+                    Box(modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(cameraAlpha)
+                        .zIndex(cameraZIndex)
+                    ) {
                         ReverseCameraScreen(isReverseGear = currentGear == "R")
 
                         if (currentGear == "R") {
-                            Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                                Text(
+                                    text = "REAR VIEW",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .padding(top = 16.dp)
+                                        .background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 8.dp)
+                                )
+                            }
                         }
                     }
 
-                    // 🌟 LAYER 2: MAP (Z-index 10)
-                    // The map sits in the middle. It's always above the invisible Dashcam, but yields to the Reverse camera.
                     Box(modifier = Modifier.fillMaxSize().zIndex(10f)) {
                         when (currentMapEngine) {
                             "MAPBOX" -> Viewport(
@@ -525,11 +538,9 @@ fun TeslaLayout(activity: MainActivity? = null) {
                 }
             }
         }
-        // --- PORTRAIT MODE ---
         else {
             Column(modifier = Modifier.fillMaxSize()) {
 
-                // Top gauges with error drawer
                 Box(modifier = Modifier.wrapContentHeight().fillMaxWidth()) {
                     InstrumentClusterWrapper(
                         modifier = Modifier.fillMaxWidth().clickable { isErrorDrawerOpen = !isErrorDrawerOpen },
@@ -537,7 +548,8 @@ fun TeslaLayout(activity: MainActivity? = null) {
                         carStateFlow = carStateFlow, gpsStatus = gpsStatus, batteryLevel = batteryLevel,
                         instruction = currentInstruction, currentNavDistance = currentManeuverDistance,
                         gpsSpeed = currentSpeedGps, routeDuration = currentRouteDuration,
-                        speedLimit = currentSpeedLimit, showSpeedLimit = showSpeedLimitSetting
+                        speedLimit = effectiveSpeedLimit,
+                        showSpeedLimit = showSpeedLimitSetting
                     )
                     SmartErrorDrawer(
                         errors = activeErrors, isOpen = isErrorDrawerOpen,
@@ -546,19 +558,33 @@ fun TeslaLayout(activity: MainActivity? = null) {
                     )
                 }
 
-                // Middle section (Layering map, camera, and gear selector)
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
 
-                    // 🌟 LAYER 1: CAMERA (In the background)
-                    Box(modifier = Modifier.fillMaxSize().zIndex(if (currentGear == "R") 20f else 0f)) {
+                    val cameraAlpha = if (currentGear == "R") 1f else 0.01f
+                    val cameraZIndex = if (currentGear == "R") 30f else 0f
+
+                    Box(modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(cameraAlpha)
+                        .zIndex(cameraZIndex)
+                    ) {
                         ReverseCameraScreen(isReverseGear = currentGear == "R")
 
                         if (currentGear == "R") {
-                            Text("REAR VIEW", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp).background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp)).padding(horizontal = 8.dp))
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                                Text(
+                                    text = "REAR VIEW",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier
+                                        .padding(top = 16.dp)
+                                        .background(Color.Black.copy(0.5f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 8.dp)
+                                )
+                            }
                         }
                     }
 
-                    // 🌟 LAYER 2: MAP (Above the camera)
                     Box(modifier = Modifier.fillMaxSize().zIndex(10f)) {
                         when (currentMapEngine) {
                             "MAPBOX" -> Viewport(
@@ -581,7 +607,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
                         }
                     }
 
-                    // 🌟 LAYER 3: GEAR SELECTOR (Z-index 30 - Absolutely on top, to allow shifting from R back to D)
                     GearSelector(
                         currentGear = currentGear,
                         onGearSelected = { gear -> manualShiftTo(gear) },
@@ -594,7 +619,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
                     )
                 }
 
-                // Bottom Menu
                 Dock(
                     modifier = Modifier.height(110.dp),
                     isLandscape = false,
@@ -602,10 +626,6 @@ fun TeslaLayout(activity: MainActivity? = null) {
                 )
             }
         }
-
-        // =========================================================================
-        // FULL-SCREEN OVERLAYS (Settings, Apps, Night Mode)
-        // =========================================================================
 
         if (isSettingsOpen) {
             BackHandler { isSettingsOpen = false }
@@ -677,7 +697,6 @@ fun getBatteryLevel(context: Context): Int {
     return batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
 }
 
-// Mathematical function to determine the distance of a point from a line segment (to calculate route deviation)
 private fun pointToLineDistance(p: Location, a: Location, b: Location): Float {
     val xA = a.longitude
     val yA = a.latitude

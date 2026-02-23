@@ -32,6 +32,9 @@ object ObdDataManager {
 
         monitorJob = CoroutineScope(Dispatchers.IO).launch {
             while (!isUserStopped) {
+                // 🌟 OPRAVA: Deklarace socketu přesunuta ven, abychom ho mohli spolehlivě zavřít
+                var socket: android.bluetooth.BluetoothSocket? = null
+
                 try {
                     val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
                     val adapter = bluetoothManager.adapter
@@ -39,7 +42,7 @@ object ObdDataManager {
 
                     // Standard SPP (Serial Port Profile) UUID for ELM327 adapters
                     val uuid = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-                    val socket = device?.createRfcommSocketToServiceRecord(uuid)
+                    socket = device?.createRfcommSocketToServiceRecord(uuid)
 
                     socket?.connect()
                     _carState.value = _carState.value.copy(isConnected = true, error = null)
@@ -85,11 +88,17 @@ object ObdDataManager {
                         }
                         delay(200) // Prevent flooding the Bluetooth serial bus
                     }
-                    socket?.close()
 
                 } catch (e: Exception) {
                     // Handle disconnects gracefully
                     _carState.value = _carState.value.copy(isConnected = false, speed = 0, rpm = 0, error = null)
+                } finally {
+                    // 🌟 OPRAVA: Zde se socket VŽDY bezpečně zavře
+                    try {
+                        socket?.close()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Chyba při zavírání socketu", e)
+                    }
                 }
 
                 // Auto-reconnect delay

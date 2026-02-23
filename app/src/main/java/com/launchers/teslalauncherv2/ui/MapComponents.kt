@@ -79,7 +79,7 @@ fun Viewport(
     modifier: Modifier = Modifier,
     isNightPanel: Boolean = false,
     is3dModeExternal: Boolean = false,
-    currentNavDistance: Int? = null, // 🌟 Adaptivní Zoom: Vzdálenost k manévru
+    currentNavDistance: Int? = null,
     show3dBuildings: Boolean = true,
     searchEngine: String,
     currentLocation: Location?,
@@ -100,7 +100,7 @@ fun Viewport(
     val scope = rememberCoroutineScope()
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
 
-    // Chytré centrování
+    // Chytré centrování po interakci uživatele
     LaunchedEffect(mapViewportState.mapViewportStatus) {
         if (mapViewportState.mapViewportStatus == ViewportStatus.Idle) {
             val delayMillis = if (is3dModeExternal) 5000L else 20000L
@@ -113,13 +113,13 @@ fun Viewport(
         }
     }
 
-    // 🌟 ZMĚNA: Adaptivní zoom a náklon podle vzdálenosti k manévru
+    // 🌟 Adaptivní zoom: Spouští se pouze při změně stavu, neblokuje aplikaci
     LaunchedEffect(is3dModeExternal, currentNavDistance) {
         val tPitch = if (is3dModeExternal) {
             when {
                 currentNavDistance == null -> 60.0
-                currentNavDistance > 2000 -> 40.0 // Dálnice: kamera se zvedne, díváme se daleko
-                currentNavDistance < 600 -> 65.0  // Blížíme se: kamera jde víc shora na křižovatku
+                currentNavDistance > 2000 -> 40.0
+                currentNavDistance < 600 -> 65.0
                 else -> 55.0
             }
         } else 0.0
@@ -127,8 +127,8 @@ fun Viewport(
         val tZoom = if (is3dModeExternal) {
             when {
                 currentNavDistance == null -> 16.0
-                currentNavDistance > 2000 -> 14.5 // Oddálení pro lepší přehled
-                currentNavDistance < 600 -> 17.5  // Přiblížení na přesné odbočení
+                currentNavDistance > 2000 -> 14.5
+                currentNavDistance < 600 -> 17.5
                 else -> 16.0
             }
         } else 13.0
@@ -136,6 +136,7 @@ fun Viewport(
         val tBear = if (is3dModeExternal) FollowPuckViewportStateBearing.SyncWithLocationPuck else FollowPuckViewportStateBearing.Constant(0.0)
         val tPad = if (is3dModeExternal) EdgeInsets(800.0, 0.0, 0.0, 0.0) else EdgeInsets(0.0, 0.0, 0.0, 0.0)
 
+        // Mapbox si to vyřeší sám elegantně na pozadí a puk opět funguje!
         mapViewportState.transitionToFollowPuckState(
             FollowPuckViewportStateOptions.Builder().pitch(tPitch).zoom(tZoom).bearing(tBear).padding(tPad).build()
         )
@@ -233,7 +234,7 @@ fun GoogleViewport(
     modifier: Modifier = Modifier,
     isNightPanel: Boolean = false,
     is3dModeExternal: Boolean = false,
-    currentNavDistance: Int? = null, // 🌟 Adaptivní Zoom
+    currentNavDistance: Int? = null,
     searchEngine: String,
     currentLocation: Location?,
     routeGeoJson: String?,
@@ -250,11 +251,13 @@ fun GoogleViewport(
     var suggestions by remember { mutableStateOf<List<SearchSuggestion>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val googleApiKey = remember { try { val ai = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA); ai.metaData.getString("com.google.android.geo.API_KEY") ?: "" } catch (e: Exception) { "" } }
+
+    // 🌟 POJISTKA GOOGLE MAPS PROTI PÁDŮM:
+    var isMapLoaded by remember { mutableStateOf(false) }
     val cameraPositionState = rememberCameraPositionState { position = CameraPosition.fromLatLngZoom(LatLng(50.0755, 14.4378), 13f) }
 
-    // Chytré centrování
-    LaunchedEffect(cameraPositionState.isMoving) {
-        if (!cameraPositionState.isMoving && cameraPositionState.cameraMoveStartedReason == CameraMoveStartedReason.GESTURE) {
+    LaunchedEffect(cameraPositionState.isMoving, isMapLoaded) {
+        if (isMapLoaded && !cameraPositionState.isMoving && cameraPositionState.cameraMoveStartedReason == CameraMoveStartedReason.GESTURE) {
             val delayMillis = if (is3dModeExternal) 5000L else 20000L
             delay(delayMillis)
             if (currentLocation != null) {
@@ -267,9 +270,8 @@ fun GoogleViewport(
         }
     }
 
-    // 🌟 ZMĚNA: Adaptivní zoom a náklon pro Google Mapy
     LaunchedEffect(currentLocation, is3dModeExternal, currentNavDistance) {
-        if (is3dModeExternal && currentLocation != null && cameraPositionState.cameraMoveStartedReason != CameraMoveStartedReason.GESTURE) {
+        if (isMapLoaded && is3dModeExternal && currentLocation != null && cameraPositionState.cameraMoveStartedReason != CameraMoveStartedReason.GESTURE) {
             val tTilt = when {
                 currentNavDistance == null -> 60f
                 currentNavDistance > 2000 -> 40f
@@ -283,7 +285,8 @@ fun GoogleViewport(
                 else -> 16f
             }
 
-            cameraPositionState.animate(
+            // Místo animate() používáme move(), aby se UI Thread ve 3D režimu při neustálém sypání GPS nezasekával
+            cameraPositionState.move(
                 CameraUpdateFactory.newCameraPosition(
                     CameraPosition.Builder()
                         .target(LatLng(currentLocation.latitude, currentLocation.longitude))
@@ -291,7 +294,7 @@ fun GoogleViewport(
                         .tilt(tTilt)
                         .bearing(currentLocation.bearing)
                         .build()
-                ), 1500
+                )
             )
         }
     }
@@ -311,15 +314,17 @@ fun GoogleViewport(
 
         onDestinationSet(destinationPoint)
 
-        scope.launch {
-            val tTilt = if (is3dModeExternal) 60f else 0f
-            val tZoom = if (is3dModeExternal) 16f else 13f
-            val tBear = if (is3dModeExternal && currentLocation != null) currentLocation.bearing else 0f
-            val targetLatLng = if (currentLocation != null) LatLng(currentLocation.latitude, currentLocation.longitude) else cameraPositionState.position.target
+        if (isMapLoaded) {
+            scope.launch {
+                val tTilt = if (is3dModeExternal) 60f else 0f
+                val tZoom = if (is3dModeExternal) 16f else 13f
+                val tBear = if (is3dModeExternal && currentLocation != null) currentLocation.bearing else 0f
+                val targetLatLng = if (currentLocation != null) LatLng(currentLocation.latitude, currentLocation.longitude) else cameraPositionState.position.target
 
-            cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(
-                CameraPosition.Builder().target(targetLatLng).zoom(tZoom).tilt(tTilt).bearing(tBear).build()
-            ), 1000)
+                cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(
+                    CameraPosition.Builder().target(targetLatLng).zoom(tZoom).tilt(tTilt).bearing(tBear).build()
+                ), 1000)
+            }
         }
 
         val currentPoint = if (currentLocation != null) Point.fromLngLat(currentLocation.longitude, currentLocation.latitude) else Point.fromLngLat(cameraPositionState.position.target.longitude, cameraPositionState.position.target.latitude)
@@ -337,7 +342,9 @@ fun GoogleViewport(
 
     Box(modifier = modifier.fillMaxWidth().background(Color.DarkGray)) {
         val topPadding = if (is3dModeExternal) 300.dp else 0.dp
-        GoogleMapDisplay(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal, topPadding = topPadding)
+
+        // Předáváme isMapLoaded = true
+        GoogleMapDisplay(modifier = Modifier.fillMaxSize(), cameraPositionState = cameraPositionState, routeGeoJson = routeGeoJson, is3dMode = is3dModeExternal, topPadding = topPadding, onMapLoaded = { isMapLoaded = true })
 
         val uiAlpha by animateFloatAsState(targetValue = if (isNightPanel) 0f else 1f, label = "UI Fade")
 
@@ -378,12 +385,14 @@ fun GoogleViewport(
                 }
 
                 FloatingActionButton(onClick = {
-                    scope.launch {
-                        val tTilt = if (is3dModeExternal) 60f else 0f
-                        val tZoom = if (is3dModeExternal) 16f else 13f
-                        val tBear = if (is3dModeExternal && currentLocation != null) currentLocation.bearing else 0f
-                        if (currentLocation != null) cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(LatLng(currentLocation.latitude, currentLocation.longitude)).zoom(tZoom).tilt(tTilt).bearing(tBear).build()), 1000)
-                        else cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(cameraPositionState.position.target).zoom(tZoom).tilt(tTilt).bearing(tBear).build()), 1000)
+                    if (isMapLoaded) {
+                        scope.launch {
+                            val tTilt = if (is3dModeExternal) 60f else 0f
+                            val tZoom = if (is3dModeExternal) 16f else 13f
+                            val tBear = if (is3dModeExternal && currentLocation != null) currentLocation.bearing else 0f
+                            if (currentLocation != null) cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(LatLng(currentLocation.latitude, currentLocation.longitude)).zoom(tZoom).tilt(tTilt).bearing(tBear).build()), 1000)
+                            else cameraPositionState.animate(CameraUpdateFactory.newCameraPosition(CameraPosition.Builder().target(cameraPositionState.position.target).zoom(tZoom).tilt(tTilt).bearing(tBear).build()), 1000)
+                        }
                     }
                 }, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp), containerColor = Color.Black, contentColor = Color.White) { Icon(Icons.Default.MyLocation, "Locate Me") }
             }
@@ -440,6 +449,7 @@ fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.ex
                     }
                 }
             }
+            // 🌟 ZAPNUTO ZPĚT! Toto kreslí puk a řídí jeho kameru hladce na pozadí!
             if (locationPermissionGranted) {
                 mapView.location.updateSettings {
                     enabled = true
@@ -454,7 +464,7 @@ fun TeslaMap(modifier: Modifier = Modifier, mapViewportState: com.mapbox.maps.ex
 }
 
 @Composable
-fun GoogleMapDisplay(modifier: Modifier = Modifier, cameraPositionState: com.google.maps.android.compose.CameraPositionState, routeGeoJson: String? = null, is3dMode: Boolean = false, topPadding: androidx.compose.ui.unit.Dp = 0.dp) {
+fun GoogleMapDisplay(modifier: Modifier = Modifier, cameraPositionState: com.google.maps.android.compose.CameraPositionState, routeGeoJson: String? = null, is3dMode: Boolean = false, topPadding: androidx.compose.ui.unit.Dp = 0.dp, onMapLoaded: () -> Unit = {}) {
     val uiSettings = remember { MapUiSettings(zoomControlsEnabled = false, myLocationButtonEnabled = false, mapToolbarEnabled = false) }
     val mapProperties = remember(is3dMode) { MapProperties(isMyLocationEnabled = true, isTrafficEnabled = true, maxZoomPreference = 20f, minZoomPreference = 5f) }
 
@@ -474,7 +484,8 @@ fun GoogleMapDisplay(modifier: Modifier = Modifier, cameraPositionState: com.goo
         points
     }
 
-    GoogleMap(modifier = modifier, cameraPositionState = cameraPositionState, properties = mapProperties, uiSettings = uiSettings, contentPadding = PaddingValues(top = topPadding)) {
+    // 🌟 PŘIDÁNO: onMapLoaded callback
+    GoogleMap(modifier = modifier, cameraPositionState = cameraPositionState, properties = mapProperties, uiSettings = uiSettings, contentPadding = PaddingValues(top = topPadding), onMapLoaded = onMapLoaded) {
         if (routePoints.isNotEmpty()) Polyline(points = routePoints, color = Color(0xAA00B0FF), width = 24f, geodesic = true)
     }
 }

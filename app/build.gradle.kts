@@ -106,9 +106,12 @@ dependencies {
     implementation("com.google.maps.android:maps-compose:8.1.0")
     implementation("com.google.android.gms:play-services-maps:20.0.0")
 
+    /**
     //  LiteRT - TENSORFLOW LITE (AI LIBRARIES) - These run ONLY for the "ai" build variant!
-    "aiImplementation"("com.google.ai.edge.litert:litert:1.0.1")
-    "aiImplementation"("com.google.ai.edge.litert:litert-gpu:1.0.1")
+    "aiImplementation"("org.tensorflow:tensorflow-lite:2.16.1")
+    "aiImplementation"("org.tensorflow:tensorflow-lite-gpu:2.16.1")
+    **/
+    "aiImplementation"("com.google.mlkit:text-recognition:16.0.0")
 
 
     testImplementation(libs.junit)

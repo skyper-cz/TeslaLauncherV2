@@ -13,7 +13,7 @@ object DashcamManager {
 
     // Maximální povolená velikost složky (1 GB = 1024 * 1024 * 1024 bytů)
     // Pokud chceš víc, změň to třeba na 2L * 1024 * 1024 * 1024 pro 2 GB.
-    private const val MAX_FOLDER_SIZE_BYTES = 1L * 1024 * 1024 * 1024
+    private const val MAX_FOLDER_SIZE_BYTES = 2L * 1024 * 1024 * 1024
 
     /**
      * Vrátí cestu k novému souboru, kam se má uložit aktuální nahrávka.
