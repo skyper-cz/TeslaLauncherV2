@@ -7,7 +7,7 @@ on:
     - cron: '0 2 * * *' # Runs daily at 2:00 AM UTC
   workflow_dispatch: # Allows manual trigger
 
-# ⚠️ Permissions needed to create/edit Releases
+# Permissions needed to create/edit Releases
 permissions:
   contents: write
 
@@ -36,26 +36,30 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build with Gradle
+        # AssembleDebug builds both AiDebug and StandardDebug flavors
         run: ./gradlew assembleDebug
 
       # --- NIGHTLY RELEASE STEPS ---
 
-      # 1. Rename APK to include the date (e.g., TeslaLauncher-Nightly-20240218.apk)
-      - name: Rename APK
+      # 1. Rename both APKs to include flavor name and current date
+      - name: Rename APKs
         run: |
-          mv app/build/outputs/apk/debug/app-debug.apk TeslaLauncher-Nightly-$(date +%Y%m%d).apk
+          DATE=$(date +%Y%m%d)
+          mv app/build/outputs/apk/ai/debug/app-ai-debug.apk TeslaLauncher-AI-Nightly-$DATE.apk
+          mv app/build/outputs/apk/standard/debug/app-standard-debug.apk TeslaLauncher-Standard-Nightly-$DATE.apk
 
-      # 2. Update the "Nightly" Release with the new APK
+      # 2. Update the "Nightly" Release with both APKs
       - name: Update Nightly Release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "TeslaLauncher-Nightly-*.apk"
+          # Use wildcard to pick up both AI and Standard APKs
+          artifacts: "TeslaLauncher-*-Nightly-*.apk"
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag: "nightly"                 # Persistent tag
-          commit: ${{ github.sha }}      # 🌟 OPRAVA: Donutí GitHub posunout tag na aktuální zdrojový kód!
-          name: "Nightly Build 🌙"       # Release title
-          body: "Automatic nightly build. Contains the latest changes from the main branch."
-          prerelease: true               # Mark as Pre-release (orange badge)
-          allowUpdates: true             # Overwrite existing release
-          replacesArtifacts: true        # Delete old APKs, upload new ones
-          makeLatest: false              # Do not mark as "Latest" (green badge)
+          tag: "nightly"
+          commit: ${{ github.sha }}
+          name: "Nightly Build 🌙"
+          body: "Automatic nightly build. This release contains both AI-enhanced and Standard versions."
+          prerelease: true
+          allowUpdates: true
+          replacesArtifacts: true
+          makeLatest: false
